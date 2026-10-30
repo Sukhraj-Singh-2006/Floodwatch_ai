@@ -27,7 +27,15 @@ DNO_LIB_PATH = os.path.join(REPO_ROOT, "External", "UrbanFloodCast", "UrbanFlood
 if DNO_LIB_PATH not in sys.path:
     sys.path.insert(0, DNO_LIB_PATH)
 
-from models.DNO import DNO
+try:
+    from models.DNO import DNO
+except ModuleNotFoundError as exc:
+    # UrbanFloodCast is an optional external research dependency.  Keeping the
+    # import failure here would prevent every core API route from starting.
+    DNO = None
+    _DNO_IMPORT_ERROR = exc
+else:
+    _DNO_IMPORT_ERROR = None
 
 try:
     from pyproj import Transformer
@@ -89,7 +97,7 @@ class DNOInferenceService:
             REPO_ROOT, "Data", "dno", "chennai", "storm_library", "metadata", "storm_library_manifest.json"
         )
 
-        self.model: Optional[DNO] = None
+        self.model: Optional["DNO"] = None
         self.model_loaded = False
         self.actual_sha256 = ""
         self.actual_size = 0
@@ -122,6 +130,12 @@ class DNOInferenceService:
             )
 
     def _load_model(self) -> None:
+        if DNO is None:
+            raise RuntimeError(
+                "DNO service is unavailable because the optional UrbanFloodCast "
+                f"dependency could not be imported from {DNO_LIB_PATH}: {_DNO_IMPORT_ERROR}"
+            )
+
         t0 = time.perf_counter()
         self._verify_checkpoint()
 
