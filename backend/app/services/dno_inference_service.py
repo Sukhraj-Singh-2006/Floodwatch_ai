@@ -23,7 +23,7 @@ import torch
 
 # Ensure External/UrbanFloodCast DNO package is accessible
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-DNO_LIB_PATH = os.path.join(REPO_ROOT, "External", "UrbanFloodCast", "UrbanFloodCast", "DNO")
+DNO_LIB_PATH = os.path.join(REPO_ROOT, "External", "UrbanFloodCast", "DNO")
 if DNO_LIB_PATH not in sys.path:
     sys.path.insert(0, DNO_LIB_PATH)
 

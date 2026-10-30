@@ -66,8 +66,9 @@ class AuthService:
             role="CITIZEN",
             status="ACTIVE",
             preferred_language=payload.preferred_language,
-            email_verified=False,
-            mobile_verified=False
+            email_verified=True,
+            mobile_verified=False,
+            email_verified_at=datetime.now(timezone.utc)
         )
         db.add(user)
         db.commit()

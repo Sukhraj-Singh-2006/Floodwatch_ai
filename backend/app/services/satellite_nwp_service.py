@@ -11,7 +11,9 @@ Replaces Doppler Weather Radar with high-reliability satellite-NWP multi-sensor 
 
 import time
 import math
-import requests
+import json
+from urllib.parse import urlencode
+from urllib.request import urlopen
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
@@ -47,18 +49,19 @@ class SatelliteNwpService:
             params = {
                 "latitude": CHENNAI_LAT,
                 "longitude": CHENNAI_LON,
-                "current": ["precipitation", "rain", "soil_moisture_0_to_1cm", "relative_humidity_2m", "temperature_2m", "surface_pressure", "wind_speed_10m"],
-                "hourly": ["precipitation", "rain", "soil_moisture_0_to_1cm", "cape"],
+                "current": ",".join(["precipitation", "rain", "soil_moisture_0_to_1cm", "relative_humidity_2m", "temperature_2m", "surface_pressure", "wind_speed_10m"]),
+                "hourly": ",".join(["precipitation", "rain", "soil_moisture_0_to_1cm", "cape"]),
                 "timezone": "Asia/Kolkata",
                 "forecast_days": 2
             }
-            resp = requests.get(url, params=params, timeout=6)
-            if resp.status_code == 200:
-                data = resp.json()
-                parsed = self._parse_api_response(data)
-                self._cached_data = parsed
-                self._last_fetch_time = now
-                return parsed
+            request_url = f"{url}?{urlencode(params)}"
+            with urlopen(request_url, timeout=6) as response:
+                if response.status == 200:
+                    data = json.loads(response.read().decode("utf-8"))
+                    parsed = self._parse_api_response(data)
+                    self._cached_data = parsed
+                    self._last_fetch_time = now
+                    return parsed
         except Exception as e:
             print(f"[SatelliteNwpService] Live API fetch failed ({e}); utilizing calibrated Chennai telemetry baseline.")
 
