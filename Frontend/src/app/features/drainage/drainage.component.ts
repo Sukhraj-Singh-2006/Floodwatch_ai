@@ -1136,11 +1136,11 @@ export class DrainageComponent implements OnInit, AfterViewInit, OnDestroy {
       preferCanvas: true
     });
 
-    // High-contrast Dark Carto basemap
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    // OpenStreetMap basemap (no API key required)
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 18,
       subdomains: ['a', 'b', 'c'],
-      attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }).addTo(this.gisMap);
 
     this.gisPipesLayer.addTo(this.gisMap);
