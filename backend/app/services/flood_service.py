@@ -24,6 +24,7 @@ import xgboost as xgb
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 GRID_GEOJSON_PATH = os.path.join(PROJECT_ROOT, "Data", "processed", "grids", "chennai_grid_500m.geojson")
 STATIC_FEATURES_PATH = os.path.join(PROJECT_ROOT, "Data", "processed", "features", "chennai_static_spatial_features.parquet")
+STATIC_FEATURES_CSV_PATH = os.path.join(PROJECT_ROOT, "Data", "processed", "features", "chennai_static_spatial_features.csv")
 MODEL_JSON_PATH = os.path.join(PROJECT_ROOT, "Models", "trained", "chennai_xgboost_baseline.json")
 
 AUDITED_PREDICTORS = [
@@ -152,9 +153,19 @@ class FloodService:
         return geoms
 
     def _load_static_features(self) -> pd.DataFrame:
-        if not os.path.exists(STATIC_FEATURES_PATH):
-            raise FileNotFoundError(f"Static features parquet not found at {STATIC_FEATURES_PATH}")
-        return pd.read_parquet(STATIC_FEATURES_PATH)
+        if os.path.exists(STATIC_FEATURES_PATH):
+            try:
+                return pd.read_parquet(STATIC_FEATURES_PATH)
+            except ImportError:
+                # The project also ships this table as CSV, so API startup does not
+                # depend on an optional Parquet engine being installed.
+                if not os.path.exists(STATIC_FEATURES_CSV_PATH):
+                    raise
+        if os.path.exists(STATIC_FEATURES_CSV_PATH):
+            return pd.read_csv(STATIC_FEATURES_CSV_PATH)
+        raise FileNotFoundError(
+            f"Static features were not found at {STATIC_FEATURES_PATH} or {STATIC_FEATURES_CSV_PATH}"
+        )
 
     def _validate_features(self):
         """Guarantees the model receives exactly its audited 25-feature set."""

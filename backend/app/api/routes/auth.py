@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from backend.app.db.session import get_db
 from backend.app.db.models.user import User
 from backend.app.db.models.citizen_preference import CitizenAlertPreferences
+from backend.app.db.models.otp import OtpVerification
 from backend.app.schemas.auth import (
     UserLoginRequest,
     CitizenRegisterRequest,
@@ -37,6 +38,12 @@ def _saved_location(sl) -> SavedLocationSchema:
 
 @router.post("/register", response_model=TokenResponse)
 def register_citizen(payload: CitizenRegisterRequest, db: Session = Depends(get_db)):
+    verification = db.query(OtpVerification).filter(
+        OtpVerification.target == payload.email.lower().strip(),
+        OtpVerification.purpose == "REGISTRATION",
+    ).order_by(OtpVerification.created_at.desc()).first()
+    if not verification or verification.verified_at is None:
+        raise HTTPException(status_code=400, detail="Verify your email address before creating an account.")
     user = AuthService.register_citizen(payload, db)
     tokens = AuthService.create_tokens_for_user(user)
     return TokenResponse(
