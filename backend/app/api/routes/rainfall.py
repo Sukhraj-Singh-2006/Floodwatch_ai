@@ -68,7 +68,10 @@ def get_detailed_weather_telemetry():
             "cloudburst_risk": "MODERATE",
             "tidal_boundary_status": "High Tide Lock (+0.82m Surge)",
             "catchment_stress_pct": 82,
-            "soil_saturation_pct": sat_data.get("soil_saturation_pct", 85.5)
+            "soil_saturation_pct": sat_data.get("soil_saturation_pct"),
+            "soil_moisture_m3_m3": sat_data.get("soil_moisture_m3_m3"),
+            "soil_data_status": sat_data.get("soil_data_status", "UNAVAILABLE"),
+            "soil_source": sat_data.get("source", "Unknown source")
         },
         "nowcasts": sat_data.get("nowcasts", {}),
         "aws_stations": [

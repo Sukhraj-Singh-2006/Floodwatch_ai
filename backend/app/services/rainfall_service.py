@@ -50,7 +50,10 @@ class RainfallService:
             "confidence": sat_obs.get("confidence", 0.96),
             "accumulated_24h_mm": sat_obs.get("accumulated_24h_mm", 68.4),
             "rainfall_delta_mm": sat_obs.get("rainfall_delta_mm", 8.5),
-            "soil_saturation_pct": sat_obs.get("soil_saturation_pct", 85.5),
+            "soil_saturation_pct": sat_obs.get("soil_saturation_pct"),
+            "soil_moisture_m3_m3": sat_obs.get("soil_moisture_m3_m3"),
+            "soil_data_status": sat_obs.get("soil_data_status", "UNAVAILABLE"),
+            "soil_source": sat_obs.get("soil_source", sat_obs.get("source")),
             "stationCount": telemetry.get("station_count", 6),
             "stations": telemetry.get("stations", [])
         }
