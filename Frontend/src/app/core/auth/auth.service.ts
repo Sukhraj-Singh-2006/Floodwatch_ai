@@ -1,7 +1,7 @@
 import { Injectable, signal, computed } from '@angular/core';
 import { HttpClient, HttpBackend } from '@angular/common/http';
 import { Router } from '@angular/router';
-import { Observable, tap, catchError, throwError, map, of } from 'rxjs';
+import { Observable, tap, catchError, throwError, map } from 'rxjs';
 import { environment } from '../../../environments/environment';
 
 export type UserRole = 'CITIZEN' | 'GOVERNMENT_VIEWER' | 'GOVERNMENT_OPERATOR' | 'GOVERNMENT_SUPERVISOR' | 'ADMIN';
@@ -134,141 +134,24 @@ export class AuthService {
     }
   }
 
-  private readonly DEMO_USERS: Record<string, { profile: UserProfile; passwordMatch: string }> = {
-    citizen: {
-      profile: {
-        id: 1,
-        full_name: 'Rohan Varma (Citizen)',
-        email: 'rohan.citizen@gmail.com',
-        mobile: '+919820044444',
-        role: 'CITIZEN',
-        status: 'ACTIVE',
-        email_verified: true,
-        mobile_verified: true,
-        created_at: '2026-06-01T00:00:00Z'
-      },
-      passwordMatch: 'Citizen@2026'
-    },
-    gov: {
-      profile: {
-        id: 2,
-        full_name: 'Rajesh Sharma (EOC Watch Officer)',
-        email: 'eoc.officer@chennai.gov.in',
-        mobile: '+919820022222',
-        role: 'GOVERNMENT_OPERATOR',
-        status: 'VERIFIED',
-        email_verified: true,
-        mobile_verified: true,
-        created_at: '2026-06-01T00:00:00Z'
-      },
-      passwordMatch: 'Gov@Chennai2026'
-    },
-    admin: {
-      profile: {
-        id: 3,
-        full_name: 'System Administrator (EOC Chennai)',
-        email: 'admin@floodwatch.chennai.gov.in',
-        mobile: '+919820011111',
-        role: 'ADMIN',
-        status: 'VERIFIED',
-        email_verified: true,
-        mobile_verified: true,
-        created_at: '2026-06-01T00:00:00Z'
-      },
-      passwordMatch: 'Admin@Chennai2026'
-    }
-  };
-
-  private createDemoToken(user: UserProfile): string {
-    const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-    const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600; // 7 days from now
-    const payload = btoa(JSON.stringify({ sub: user.email, role: user.role, id: user.id, exp }));
-    return `${header}.${payload}.floodwatch_dev_signature`;
-  }
-
-  private matchDemoUser(loginId: string, password: string): UserProfile | null {
-    const norm = loginId.trim().toLowerCase();
-    if (
-      (norm === 'rohan.citizen@gmail.com' || norm.includes('9820044444') || norm.includes('9820112233')) &&
-      password === this.DEMO_USERS['citizen'].passwordMatch
-    ) {
-      return this.DEMO_USERS['citizen'].profile;
-    }
-    if (
-      (norm === 'eoc.officer@chennai.gov.in' || norm.includes('9820022222')) &&
-      password === this.DEMO_USERS['gov'].passwordMatch
-    ) {
-      return this.DEMO_USERS['gov'].profile;
-    }
-    if (
-      (norm === 'admin@floodwatch.chennai.gov.in' || norm === 'admin' || norm.includes('9820011111')) &&
-      password === this.DEMO_USERS['admin'].passwordMatch
-    ) {
-      return this.DEMO_USERS['admin'].profile;
-    }
-    return null;
-  }
-
   registerCitizen(payload: any): Observable<AuthResponse> {
     return this.http.post<AuthResponse>(`${this.baseUrl}/api/v1/auth/register`, payload).pipe(
-      tap(res => this.handleAuthSuccess(res)),
+      tap((res) => this.handleAuthSuccess(res)),
       catchError((err) => {
-        if (err.status === 0 || err.status >= 500) {
-          const newUser: UserProfile = {
-            id: Date.now(),
-            full_name: payload.full_name || 'Registered Citizen',
-            email: payload.email,
-            mobile: payload.mobile,
-            role: 'CITIZEN',
-            status: 'ACTIVE',
-            email_verified: true,
-            mobile_verified: true,
-            created_at: new Date().toISOString()
-          };
-          const mockRes: AuthResponse = {
-            access_token: this.createDemoToken(newUser),
-            refresh_token: 'mock-refresh-' + newUser.id,
-            token_type: 'bearer',
-            user: newUser
-          };
-          this.handleAuthSuccess(mockRes);
-          return of(mockRes);
-        }
-        return throwError(() => err);
+        const message = err?.error?.detail || err?.message || 'Registration failed. Please try again.';
+        return throwError(() => new Error(message));
       })
     );
   }
 
   login(payload: { login_id: string; password: string; remember_me?: boolean }): Observable<AuthResponse> {
-    // If demo credentials match and backend is not responding or in mock mode:
     return this.http.post<AuthResponse>(`${this.baseUrl}/api/v1/auth/login`, payload).pipe(
-      tap(res => this.handleAuthSuccess(res)),
+      tap((res) => this.handleAuthSuccess(res)),
       catchError((err) => {
-        // Check for offline demo fallback
-        const demoUser = this.matchDemoUser(payload.login_id, payload.password);
-        if (demoUser && (err.status === 0 || err.status === 404 || err.status >= 500)) {
-          const mockRes: AuthResponse = {
-            access_token: this.createDemoToken(demoUser),
-            refresh_token: 'mock-refresh-' + demoUser.id,
-            token_type: 'bearer',
-            user: demoUser
-          };
-          this.handleAuthSuccess(mockRes);
-          return of(mockRes);
-        }
-
-        if (err.status === 401) {
-          const msg = err?.error?.detail || 'Incorrect email/mobile or password.';
-          return throwError(() => new Error(msg));
-        }
-
-        if (err.status === 0) {
-          // Backend offline but credentials didn't match demo accounts
-          return throwError(() => new Error('Backend API is offline (localhost:8000). Please select one of the 3 demo roles below to sign in.'));
-        }
-
-        const msg = err?.error?.detail || err?.message || 'Authentication failed. Please verify credentials.';
-        return throwError(() => new Error(msg));
+        const message = err?.error?.detail || (err.status === 0
+          ? 'Cannot reach the FloodWatch API. Start the backend and try again.'
+          : err?.message || 'Authentication failed. Please verify your credentials.');
+        return throwError(() => new Error(message));
       })
     );
   }

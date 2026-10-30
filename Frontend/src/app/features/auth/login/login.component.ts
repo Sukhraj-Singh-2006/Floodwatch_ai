@@ -813,14 +813,14 @@ export class LoginComponent {
   fillDemo(role: 'citizen' | 'gov' | 'admin'): void {
     this.errorMessage.set(null);
     if (role === 'citizen') {
-      this.loginId = 'rohan.citizen@gmail.com';
+      this.loginId = 'citizen@dev.floodwatch.local';
       this.password = 'Citizen@2026';
     } else if (role === 'gov') {
-      this.loginId = 'eoc.officer@chennai.gov.in';
-      this.password = 'Gov@Chennai2026';
+      this.loginId = 'operator@dev.floodwatch.local';
+      this.password = 'DevOperator@2026';
     } else if (role === 'admin') {
-      this.loginId = 'admin@floodwatch.chennai.gov.in';
-      this.password = 'Admin@Chennai2026';
+      this.loginId = 'admin@dev.floodwatch.local';
+      this.password = 'DevAdmin@2026';
     }
   }
 
