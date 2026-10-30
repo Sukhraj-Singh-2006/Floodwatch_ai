@@ -161,7 +161,7 @@ export class EocDataService {
       }
       if (live) {
         this.dataMode.set('LIVE');
-        this.backendNote.set('Observed rainfall, radar & drainage geometry live · forecast horizons, surcharge & incidents simulated.');
+        this.backendNote.set('Regional rainfall and soil-moisture estimates live · forecast horizons, surcharge & incidents simulated.');
       } else {
         this.dataMode.set('SIMULATION');
         this.backendNote.set('Backend feed unavailable — showing DEMO SIMULATION.');
@@ -175,6 +175,9 @@ export class EocDataService {
     this.telemetry.update((t) => ({
       ...t,
       radarNowcastMmh: r['value'] as number,
+      soilSaturationPct: typeof r['soil_saturation_pct'] === 'number'
+        ? r['soil_saturation_pct']
+        : t.soilSaturationPct,
       generatedAt: new Date().toISOString(),
     }));
   }

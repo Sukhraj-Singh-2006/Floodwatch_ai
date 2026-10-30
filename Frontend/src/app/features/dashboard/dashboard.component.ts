@@ -209,19 +209,25 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
               <span class="ops-card-label">Infiltration Telemetry</span>
               <h4 class="ops-card-title">Soil Saturation</h4>
             </div>
-            <span class="badge font-mono status-dim">UNAVAILABLE</span>
+            <span class="badge font-mono" [class.status-safe]="soilSaturationPct !== null" [class.status-dim]="soilSaturationPct === null">{{ soilTelemetryStatus }}</span>
           </div>
-          <p class="ops-card-sub">Subsurface moisture data contract:</p>
+          <p class="ops-card-sub">Regional soil moisture estimate:</p>
           <div class="soil-state-box">
-            <div class="soil-icon-row">
-              <span class="soil-status-text">Data Unavailable</span>
-            </div>
-            <p class="soil-desc">
-              Satellite soil-moisture and in-situ TDR probe telemetry awaiting GCC sensor grid deployment. Interface schema is established for future ingestion.
-            </p>
+            @if (soilSaturationPct !== null) {
+              <div class="soil-icon-row">
+                <span class="soil-status-text">{{ soilSaturationPct.toFixed(1) }}% saturation</span>
+                <span class="src-tag tag-model">{{ soilSaturationPct >= 80 ? 'SATURATED' : 'NORMAL' }}</span>
+              </div>
+              <p class="soil-desc">
+                Volumetric moisture: {{ soilMoistureM3M3 !== null ? soilMoistureM3M3.toFixed(3) + ' m³/m³' : 'not provided' }}. Source: {{ soilTelemetrySource }}. This is a regional grid estimate; GCC in-situ TDR probes are not connected.
+              </p>
+            } @else {
+              <div class="soil-icon-row"><span class="soil-status-text">Soil telemetry unavailable</span></div>
+              <p class="soil-desc">The rainfall telemetry API did not provide a soil moisture estimate. Check the backend connection and data source.</p>
+            }
             <div class="driver-item" style="margin-top: 0.5rem;">
-              <span class="d-name">Telemetry Status:</span>
-              <span class="src-tag tag-unavail">UNAVAILABLE</span>
+              <span class="d-name">Data Status:</span>
+              <span class="src-tag" [class.tag-model]="soilSaturationPct !== null" [class.tag-unavail]="soilSaturationPct === null">{{ soilTelemetryStatus }}</span>
             </div>
           </div>
         </div>
@@ -2624,9 +2630,14 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
     pressure: 1004.8,
     wind: '18.5 km/h ENE (Onshore)',
     radarDwr: '24.5 mm/h (Fused QPE)',
-    soilSaturation: '85.5% (Saturated)',
+    soilSaturation: 'Unavailable',
     tidalLock: 'High Tide Lock (+0.82m MSL)'
   };
+
+  soilSaturationPct: number | null = null;
+  soilMoistureM3M3: number | null = null;
+  soilTelemetryStatus = 'UNAVAILABLE';
+  soilTelemetrySource = 'Waiting for rainfall telemetry';
 
   // Physical Flood Prediction & ETA
   predRainRate = 42.0;
@@ -2663,14 +2674,23 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
         }
         if (res && res.city_aggregate) {
           const ca = res.city_aggregate;
-          const satPct = ca.soil_saturation_pct ?? 85.5;
+          const rawSatPct = ca.soil_saturation_pct;
+          const satPct = typeof rawSatPct === 'number' && Number.isFinite(rawSatPct) ? rawSatPct : null;
+          this.soilSaturationPct = satPct;
+          this.soilMoistureM3M3 = typeof ca.soil_moisture_m3_m3 === 'number' && Number.isFinite(ca.soil_moisture_m3_m3)
+            ? ca.soil_moisture_m3_m3
+            : null;
+          this.soilTelemetryStatus = satPct === null
+            ? 'UNAVAILABLE'
+            : String(ca.soil_data_status ?? 'GRID_ESTIMATE').replaceAll('_', ' ');
+          this.soilTelemetrySource = String(ca.soil_source ?? res.source ?? 'Satellite/NWP regional grid');
           this.cityWeather = {
             temp: ca.ambient_temperature_c,
             humidity: ca.relative_humidity_pct,
             pressure: ca.barometric_pressure_hpa,
             wind: `${ca.wind_speed_kmh} km/h ${ca.wind_direction}`,
             radarDwr: `${ca.mean_rainfall_rate_mm_h} mm/h (Fused QPE)`,
-            soilSaturation: `${satPct}% (${satPct >= 80 ? 'Saturated' : 'Normal'})`,
+            soilSaturation: satPct === null ? 'Unavailable' : `${satPct.toFixed(1)}% (${satPct >= 80 ? 'Saturated' : 'Normal'})`,
             tidalLock: ca.tidal_boundary_status
           };
         }
