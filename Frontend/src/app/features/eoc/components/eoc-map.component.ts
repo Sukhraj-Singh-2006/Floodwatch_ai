@@ -18,7 +18,7 @@ function depthColor(cm: number): string {
 }
 
 const BASE_TILES = {
-  standard: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  standard: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
   satellite: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
   terrain: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
 };
@@ -323,7 +323,7 @@ export class EocMapComponent implements OnInit, OnDestroy {
     if (!this.mapEl || this.map) return;
     this.map = L.map(this.mapEl.nativeElement, {
       center: [this.store.center.lat, this.store.center.lng],
-      zoom: 11, zoomControl: false, attributionControl: false,
+      zoom: 11, zoomControl: false, attributionControl: true,
     });
     L.control.zoom({ position: 'bottomright' }).addTo(this.map);
     for (const k of ['radar', 'rain', 'nowcast', 'depth', 'risk', 'inund', 'drain', 'nodes', 'roads', 'inc', 'shelter', 'evac', 'route']) {
@@ -339,7 +339,12 @@ export class EocMapComponent implements OnInit, OnDestroy {
     // base
     if (!this.baseLayer || (this.baseLayer as unknown as { _eocBase?: string })._eocBase !== L_.base) {
       if (this.baseLayer) this.map.removeLayer(this.baseLayer);
-      this.baseLayer = L.tileLayer(BASE_TILES[L_.base], { maxZoom: 18 });
+      this.baseLayer = L.tileLayer(BASE_TILES[L_.base], {
+        maxZoom: 18,
+        attribution: L_.base === 'standard'
+          ? '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          : L_.base === 'satellite' ? 'Tiles &copy; Esri' : '&copy; OpenStreetMap contributors | Map style &copy; OpenTopoMap'
+      });
       (this.baseLayer as unknown as { _eocBase?: string })._eocBase = L_.base;
       this.baseLayer.addTo(this.map);
       this.baseLayer.bringToBack();
