@@ -34,7 +34,7 @@ export class CitizenAlertService {
   constructor(private http: HttpClient) {}
 
   fetchMyAlerts(): Observable<TargetedAlert[]> {
-    return this.http.get<TargetedAlert[]>(`${this.baseUrl}/api/v1/citizen-alerts/me`).pipe(
+    return this.http.get<TargetedAlert[]>(`${this.baseUrl}/api/v1/alerts/my-alerts`).pipe(
       tap(list => {
         this.alerts.set(list);
         const unread = list.filter(a => !a.acknowledged_at).length;
@@ -48,7 +48,7 @@ export class CitizenAlertService {
   }
 
   acknowledgeAlert(alertId: number): Observable<any> {
-    return this.http.post(`${this.baseUrl}/api/v1/citizen-alerts/me/${alertId}/acknowledge`, {}).pipe(
+    return this.http.patch(`${this.baseUrl}/api/v1/alerts/${alertId}/read`, {}).pipe(
       tap(() => {
         this.fetchMyAlerts().subscribe();
       })

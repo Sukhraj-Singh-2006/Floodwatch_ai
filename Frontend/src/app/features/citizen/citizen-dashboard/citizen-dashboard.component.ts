@@ -5,6 +5,10 @@ import { AuthService } from '../../../core/auth/auth.service';
 import { CitizenLocationService } from '../../../core/services/citizen-location.service';
 import { CitizenAlertService, TargetedAlert } from '../../../core/services/citizen-alert.service';
 import { FloodService } from '../../../core/services/flood.service';
+import { RainfallApiService } from '../../../core/services/rainfall-api.service';
+import { RainfallForecast, RainfallLocation, RainfallReading, RainfallStatus } from '../../../core/models/rainfall.model';
+import { FloodZone } from '../../../core/models/flood-risk.model';
+import { Subscription, catchError, forkJoin, of, switchMap, timer } from 'rxjs';
 import { RiskGaugeComponent } from '../../../shared/components/risk-gauge/risk-gauge.component';
 import { StatCardComponent } from '../../../shared/components/stat-card/stat-card.component';
 import { FeedbackModalComponent } from '../feedback-modal/feedback-modal.component';
@@ -27,8 +31,8 @@ import { FeedbackModalComponent } from '../feedback-modal/feedback-modal.compone
             <span class="citizen-tag">CITIZEN SAFETY PORTAL</span>
             <h1>Welcome, {{ authService.currentUser()?.full_name || 'Citizen' }}</h1>
             <p class="banner-subtitle">
-              Live flood risk advisory for your area:
-              <strong>{{ currentAreaName() }}</strong> (Zone 10 Kodambakkam — Greater Chennai)
+              Rainfall monitoring point:
+              <strong>{{ currentAreaName() }}</strong>
             </p>
           </div>
 
@@ -100,44 +104,55 @@ import { FeedbackModalComponent } from '../feedback-modal/feedback-modal.compone
         <!-- Area Risk Gauge -->
         <div class="glass-card risk-summary-card">
           <div class="card-top">
-            <h3>Local Flood Risk Gauge</h3>
-            <span class="forecast-pill">AI Model Nowcast</span>
+            <h3>Local Flood & Weather Data</h3>
+            <span class="forecast-pill">{{ rainfallStatusLabel() }}</span>
           </div>
 
-          <div class="gauge-center">
-            <app-risk-gauge [score]="currentRiskScore()"></app-risk-gauge>
-          </div>
-
-          <!-- Forecast Horizon Selection -->
-          <div class="forecast-horizon-row">
-            <span class="horizon-label">Forecast Horizon:</span>
-            <div class="horizon-buttons">
-              @for (h of horizons; track h.mins) {
-                <button
-                  type="button"
-                  class="btn-horizon"
-                  [class.active]="selectedHorizon() === h.mins"
-                  (click)="setHorizon(h.mins)"
-                >
-                  {{ h.label }}
-                </button>
-              }
+          @if (currentRiskScore() !== null) {
+            <div class="gauge-center">
+              <app-risk-gauge [score]="currentRiskScore()!"></app-risk-gauge>
             </div>
-          </div>
+            <p class="data-note">Historical-model susceptibility baseline{{ riskFeatureDate() ? ' · rainfall features: ' + riskFeatureDate() : '' }}. This is not a live flood nowcast.</p>
+          } @else {
+            <div class="data-unavailable">Historical flood-risk score is unavailable from the backend.</div>
+          }
 
           <div class="card-footer-info">
             <div class="info-item">
-              <span class="info-label">Water Inundation Depth:</span>
-              <span class="info-val font-mono">{{ waterDepth() }} cm</span>
+              <span class="info-label">Current precipitation estimate:</span>
+              <span class="info-val font-mono">Rain {{ measurement(rainfallReading()?.rain_mm, 'mm') }} · precipitation {{ measurement(rainfallReading()?.precipitation_mm, 'mm') }}</span>
             </div>
             <div class="info-item">
-              <span class="info-label">Rainfall Rate:</span>
-              <span class="info-val font-mono">{{ rainRate() }} mm/h</span>
+              <span class="info-label">Air temperature / humidity:</span>
+              <span class="info-val font-mono">{{ measurement(rainfallReading()?.temperature_c, '°C') }} / {{ measurement(rainfallReading()?.humidity_percent, '%') }}</span>
             </div>
             <div class="info-item">
-              <span class="info-label">Tide Level:</span>
-              <span class="info-val font-mono">3.82 m (Spring Tide)</span>
+              <span class="info-label">Wind / measured flood depth / tide:</span>
+              <span class="info-val font-mono">{{ measurement(rainfallReading()?.wind_speed_kmh, 'km/h') }} / unavailable / unavailable</span>
             </div>
+          </div>
+          <div class="data-provenance">
+            <span>Open-Meteo model estimate · {{ rainfallReading()?.latitude ?? '—' }}, {{ rainfallReading()?.longitude ?? '—' }}</span>
+            <span>Provider time: {{ formatTimestamp(rainfallReading()?.timestamp) }}</span>
+            <span>Backend retrieval: {{ formatTimestamp(rainfallReading()?.fetched_at) }}</span>
+            @if (rainfallStatus()?.last_failed_refresh_at) {
+              <span class="data-warning">Last failed refresh: {{ formatTimestamp(rainfallStatus()?.last_failed_refresh_at) }}</span>
+            }
+            @if (weatherError()) {
+              <span class="data-warning">{{ weatherError() }}</span>
+            }
+          </div>
+          <div class="hourly-forecast">
+            <strong>Hourly precipitation forecast (provider forecast, not observations)</strong>
+            @if (hourlyForecast()?.hourly?.length) {
+              <div class="forecast-hours">
+                @for (hour of hourlyForecast()!.hourly.slice(0, 6); track hour.timestamp) {
+                  <span>{{ formatTime(hour.timestamp) }} · {{ measurement(hour.precipitation_mm, 'mm') }} · {{ measurement(hour.precipitation_probability, '% chance') }}</span>
+                }
+              </div>
+            } @else {
+              <span class="muted">Forecast unavailable</span>
+            }
           </div>
         </div>
 
@@ -479,6 +494,15 @@ import { FeedbackModalComponent } from '../feedback-modal/feedback-modal.compone
       border-top: 1px solid rgba(255, 255, 255, 0.06);
       padding-top: 1rem;
     }
+    .data-note, .muted { color: var(--text-dim); font-size: 0.78rem; }
+    .data-note { text-align: center; margin: -0.2rem 0 1rem; }
+    .data-unavailable { color: var(--text-dim); background: rgba(148, 163, 184, 0.1); border-radius: 8px; padding: 1rem; text-align: center; }
+    .data-provenance { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.9rem; color: var(--text-dim); font-size: 0.72rem; overflow-wrap: anywhere; }
+    .data-warning { color: #f59e0b; }
+    .hourly-forecast { border-top: 1px solid rgba(255, 255, 255, 0.06); margin-top: 0.9rem; padding-top: 0.8rem; color: var(--text-dim); font-size: 0.75rem; }
+    .hourly-forecast strong { display: block; color: var(--text-main); margin-bottom: 0.5rem; }
+    .forecast-hours { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    .forecast-hours span { background: rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 0.35rem 0.5rem; }
     .info-item {
       display: flex;
       flex-direction: column;
@@ -726,20 +750,14 @@ import { FeedbackModalComponent } from '../feedback-modal/feedback-modal.compone
   `]
 })
 export class CitizenDashboardComponent implements OnInit, OnDestroy {
-  currentAreaName = signal<string>('T. Nagar / Madley Subway');
-  currentRiskScore = signal<number>(76);
-  currentRiskLevel = signal<string>('HIGH');
-  waterDepth = signal<number>(24);
-  rainRate = signal<number>(45.2);
-  selectedHorizon = signal<number>(15);
-
-  horizons = [
-    { mins: 0, label: 'Now' },
-    { mins: 15, label: '+15 min' },
-    { mins: 30, label: '+30 min' },
-    { mins: 45, label: '+45 min' },
-    { mins: 60, label: '+60 min' }
-  ];
+  currentAreaName = signal<string>('Configured Chennai point');
+  currentRiskScore = signal<number | null>(null);
+  riskFeatureDate = signal<string | null>(null);
+  rainfallReading = signal<RainfallReading | null>(null);
+  hourlyForecast = signal<RainfallForecast | null>(null);
+  rainfallStatus = signal<RainfallStatus | null>(null);
+  weatherError = signal<string | null>(null);
+  private weatherSubscription?: Subscription;
 
   activeHazard = signal<TargetedAlert | null>(null);
   showReportModal = signal<boolean>(false);
@@ -748,17 +766,87 @@ export class CitizenDashboardComponent implements OnInit, OnDestroy {
     public authService: AuthService,
     public locationService: CitizenLocationService,
     public alertService: CitizenAlertService,
-    private floodService: FloodService
+    private floodService: FloodService,
+    private rainfallApi: RainfallApiService
   ) {}
 
   ngOnInit(): void {
+    this.loadWeather();
     this.alertService.fetchMyAlerts().subscribe(alerts => {
       const hazard = alerts.find(a => (a.severity === 'CRITICAL' || a.severity === 'HIGH') && !a.acknowledged_at);
       this.activeHazard.set(hazard || null);
     });
   }
 
-  ngOnDestroy(): void {}
+  ngOnDestroy(): void { this.weatherSubscription?.unsubscribe(); }
+
+  rainfallStatusLabel(): string {
+    const status = this.rainfallStatus()?.status || this.rainfallReading()?.status;
+    if (status === 'success') return 'Fresh API data';
+    if (status === 'cached' || status === 'stale') return 'Cached / stale API data';
+    return status === 'unavailable' ? 'API unavailable' : 'Loading API data';
+  }
+
+  measurement(value: number | null | undefined, unit: string): string {
+    return value == null || !Number.isFinite(value) ? 'Unavailable' : `${value} ${unit}`;
+  }
+
+  formatTimestamp(value: string | null | undefined): string {
+    if (!value) return 'Unavailable';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? 'Unavailable' : new Intl.DateTimeFormat('en-IN', {
+      dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata'
+    }).format(date) + ' IST';
+  }
+
+  formatTime(value: string | null | undefined): string {
+    if (!value) return 'Time unavailable';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? 'Time unavailable' : new Intl.DateTimeFormat('en-IN', {
+      hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata'
+    }).format(date);
+  }
+
+  private loadWeather(): void {
+    this.weatherSubscription = this.rainfallApi.locations().pipe(
+      catchError(() => {
+        this.weatherError.set('Rainfall API configuration could not be loaded.');
+        return of({ locations: [], refresh_interval_seconds: 0, forecast_hours: 0 });
+      })
+    ).subscribe(config => {
+      const location: RainfallLocation | undefined = config.locations[0];
+      if (!location) {
+        this.weatherError.set('No rainfall monitoring location is configured inside the project study area.');
+        return;
+      }
+      this.currentAreaName.set(location.name);
+      const refreshMs = Math.max(60_000, config.refresh_interval_seconds * 1000);
+      this.weatherSubscription = timer(0, refreshMs).pipe(
+        switchMap(() => forkJoin({
+          current: this.rainfallApi.current(location.id).pipe(catchError(() => of(null))),
+          forecast: this.rainfallApi.hourly(location.id).pipe(catchError(() => of(null))),
+          status: this.rainfallApi.status(location.id).pipe(catchError(() => of(null)))
+        }))
+      ).subscribe(({ current, forecast, status }) => {
+        if (current) this.rainfallReading.set(current);
+        if (forecast) this.hourlyForecast.set(forecast);
+        if (status) this.rainfallStatus.set(status);
+        const hasCurrent = current?.precipitation_mm != null || this.rainfallReading()?.precipitation_mm != null;
+        this.weatherError.set(hasCurrent ? null : (status?.error || 'Current precipitation is unavailable from the weather provider.'));
+      });
+
+      this.floodService.getFloodZones('NOW').pipe(catchError(() => of([] as FloodZone[]))).subscribe(zones => {
+        if (!zones.length) return;
+        const nearest = zones.reduce((best, zone) => {
+          const d = (zone.latitude - location.latitude) ** 2 + (zone.longitude - location.longitude) ** 2;
+          const bestD = (best.latitude - location.latitude) ** 2 + (best.longitude - location.longitude) ** 2;
+          return d < bestD ? zone : best;
+        });
+        this.currentRiskScore.set(nearest.riskScore);
+        this.riskFeatureDate.set((nearest as FloodZone & { rainfallFeatureDate?: string }).rainfallFeatureDate || null);
+      });
+    });
+  }
 
   enableLocationSharing(): void {
     this.locationService.requestBrowserLocation()
@@ -776,31 +864,6 @@ export class CitizenDashboardComponent implements OnInit, OnDestroy {
     this.locationService.requestBrowserLocation().then(() => {
       this.alertService.fetchMyAlerts().subscribe();
     });
-  }
-
-  setHorizon(mins: number): void {
-    this.selectedHorizon.set(mins);
-    if (mins === 0) {
-      this.currentRiskScore.set(62);
-      this.waterDepth.set(16);
-      this.currentRiskLevel.set('CAUTION');
-    } else if (mins === 15) {
-      this.currentRiskScore.set(76);
-      this.waterDepth.set(24);
-      this.currentRiskLevel.set('HIGH');
-    } else if (mins === 30) {
-      this.currentRiskScore.set(84);
-      this.waterDepth.set(32);
-      this.currentRiskLevel.set('HIGH');
-    } else if (mins === 45) {
-      this.currentRiskScore.set(89);
-      this.waterDepth.set(38);
-      this.currentRiskLevel.set('CRITICAL');
-    } else {
-      this.currentRiskScore.set(92);
-      this.waterDepth.set(45);
-      this.currentRiskLevel.set('CRITICAL');
-    }
   }
 
   acknowledge(alertId: number): void {

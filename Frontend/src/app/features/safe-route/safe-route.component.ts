@@ -44,6 +44,7 @@ import { environment } from '../../../environments/environment';
                 class="route-input"
                 placeholder="Enter source location..."
                 [(ngModel)]="sourceLocation"
+                (ngModelChange)="markRouteOutdated()"
               />
             </div>
           </div>
@@ -68,6 +69,7 @@ import { environment } from '../../../environments/environment';
                 class="route-input"
                 placeholder="Enter destination location..."
                 [(ngModel)]="destinationLocation"
+                (ngModelChange)="markRouteOutdated()"
               />
             </div>
           </div>
@@ -76,7 +78,7 @@ import { environment } from '../../../environments/environment';
           <div class="input-field-group">
             <span class="field-label">Vehicle Type:</span>
             <div class="input-wrap">
-              <select [(ngModel)]="vehicleType" class="route-input" style="padding-left: 0.75rem; cursor: pointer;">
+              <select [(ngModel)]="vehicleType" (ngModelChange)="markRouteOutdated()" class="route-input" style="padding-left: 0.75rem; cursor: pointer;">
                 <option value="car">Car (Sedan/Hatch)</option>
                 <option value="SUV">SUV (High Clearance)</option>
                 <option value="truck">Heavy Commercial Truck</option>
@@ -167,6 +169,24 @@ import { environment } from '../../../environments/environment';
           @if (loading) {
             <app-loading-state message="Evaluating roadway water levels & calculating safe paths..."></app-loading-state>
           } @else if (routePlan) {
+            @if (routePlanOutdated) {
+              <div class="route-outdated-notice" role="status">Route results are for previous inputs. Click <strong>Find Safest Route</strong> to recalculate for the selected vehicle and locations.</div>
+            }
+            <div class="route-vehicle-summary">
+              Planned vehicle: <strong>{{ vehicleLabel(routePlan.vehicle_type ?? vehicleType) }}</strong>
+              @if (routePlan.speed_assumption_kmh) { <span>· ETA planning speed {{ routePlan.speed_assumption_kmh }} km/h</span> }
+            </div>
+            @if (routePlan.road_network_available === false) {
+              <div class="route-data-limit" role="note">No connected Chennai road graph is configured. These are planning polylines with geometry-based distances, not street-network routes.</div>
+            }
+            @if (routePlan.vehicle_restrictions_available === false) {
+              <div class="route-data-limit" role="note">Vehicle access restrictions are unavailable in the road data. No SUV flood tolerance or emergency restricted-road access is assumed.</div>
+            }
+            @if (routePlan.roads_excluded_due_to_vehicle?.length) {
+              <div class="route-data-limit">Roads excluded for this vehicle:
+                @for (road of routePlan.roads_excluded_due_to_vehicle; track road.id) { <span>{{ road.name }} ({{ road.reason }}) </span> }
+              </div>
+            }
             <!-- Card 1: Recommended Safe Route -->
             <div class="card route-card recommended-card">
               <div class="route-card-top">
@@ -195,7 +215,7 @@ import { environment } from '../../../environments/environment';
                 </div>
                 <div class="r-metric">
                   <span class="r-lbl">Flood Risk</span>
-                  <span class="badge status-safe">LOW</span>
+                  <span class="badge" [ngClass]="routeRiskClass(routePlan.recommendedRoute.riskStatus)">{{ routePlan.recommendedRoute.riskStatus }}</span>
                 </div>
                 <div class="r-metric">
                   <span class="r-lbl">Hazards Avoided</span>
@@ -227,7 +247,7 @@ import { environment } from '../../../environments/environment';
                 </div>
                 <div class="r-metric">
                   <span class="r-lbl">Flood Risk</span>
-                  <span class="badge status-unsafe">UNSAFE</span>
+                  <span class="badge" [ngClass]="routeRiskClass(routePlan.alternativeRoute.riskStatus)">{{ routePlan.alternativeRoute.riskStatus }}</span>
                 </div>
                 <div class="r-metric">
                   <span class="r-lbl">Exposure</span>
@@ -689,6 +709,13 @@ import { environment } from '../../../environments/environment';
       font-size: 0.7rem;
       color: var(--status-unsafe);
     }
+    .route-outdated-notice, .route-data-limit, .route-vehicle-summary {
+      border-radius: var(--radius-sm); padding: .65rem .8rem; font-size: .78rem;
+    }
+    .route-outdated-notice { background: rgba(245,158,11,.12); border: 1px solid rgba(245,158,11,.38); color: var(--text-main); }
+    .route-data-limit { background: rgba(148,163,184,.1); border: 1px solid var(--border-subtle); color: var(--text-muted); }
+    .route-vehicle-summary { color: var(--text-muted); }
+    .route-vehicle-summary strong { color: var(--text-main); }
   `]
 })
 export class SafeRouteComponent implements OnInit, AfterViewInit, OnDestroy {
@@ -699,6 +726,7 @@ export class SafeRouteComponent implements OnInit, AfterViewInit, OnDestroy {
   vehicleType = 'car';
   presetRoutes: PresetRoute[] = [];
   routePlan: RoutePlanResult | null = null;
+  routePlanOutdated = false;
   loading = false;
   emergencyFacilities: any[] = [
     { id: 'FAC-HOSP-01', name: 'Rajiv Gandhi Govt General Hospital (RGGGH)', type: 'hospital', category: 'Tertiary Trauma Center', lat: 13.0818, lon: 80.2778, phone: '044-25305000' },
@@ -856,6 +884,7 @@ export class SafeRouteComponent implements OnInit, AfterViewInit, OnDestroy {
     this.routingService.calculateSafeRoute(this.sourceLocation, this.destinationLocation, this.vehicleType).subscribe({
       next: plan => {
         this.routePlan = plan;
+        this.routePlanOutdated = false;
         this.renderRouteOnMap(plan);
         this.loading = false;
       },
@@ -863,6 +892,24 @@ export class SafeRouteComponent implements OnInit, AfterViewInit, OnDestroy {
         this.loading = false;
       }
     });
+  }
+
+  markRouteOutdated(): void {
+    if (this.routePlan) this.routePlanOutdated = true;
+  }
+
+  vehicleLabel(vehicle: string): string {
+    const labels: Record<string, string> = {
+      car: 'Car (Sedan/Hatch)', suv: 'SUV (High Clearance)',
+      truck: 'Heavy Commercial Truck', rescue: 'Emergency / Rescue Vehicle'
+    };
+    return labels[vehicle.toLowerCase()] ?? vehicle;
+  }
+
+  routeRiskClass(status: string): string {
+    if (status === 'SAFE') return 'status-safe';
+    if (status === 'CAUTION') return 'status-caution';
+    return 'status-unsafe';
   }
 
   swapLocations(): void {
@@ -890,6 +937,7 @@ export class SafeRouteComponent implements OnInit, AfterViewInit, OnDestroy {
     });
     safePolyline.bindTooltip(`
       <strong>${plan.recommendedRoute.name}</strong><br/>
+      ${this.vehicleLabel(plan.vehicle_type ?? this.vehicleType)}<br/>
       ${plan.recommendedRoute.distanceKm} km • ${plan.recommendedRoute.etaMinutes} min • Safety: ${plan.recommendedRoute.safetyScore}%
     `);
     this.routeLayersGroup.addLayer(safePolyline);
@@ -903,6 +951,7 @@ export class SafeRouteComponent implements OnInit, AfterViewInit, OnDestroy {
     });
     altPolyline.bindTooltip(`
       <strong>${plan.alternativeRoute.name}</strong><br/>
+      ${this.vehicleLabel(plan.vehicle_type ?? this.vehicleType)}<br/>
       ${plan.alternativeRoute.distanceKm} km • ${plan.alternativeRoute.etaMinutes} min (Hazards Exposure: High)
     `);
     this.routeLayersGroup.addLayer(altPolyline);

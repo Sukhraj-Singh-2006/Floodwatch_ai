@@ -39,7 +39,7 @@ export class DnoService {
         this.health.set(healthData);
       }),
       catchError(err => {
-        this.errorMessage.set('DNO hydrodynamic forecast temporarily unavailable.');
+        this.errorMessage.set(this.readableFailure(err, 'DNO health information is unavailable.'));
         return throwError(() => err);
       })
     );
@@ -54,7 +54,7 @@ export class DnoService {
         this.availableEvents.set(eventsData);
       }),
       catchError(err => {
-        this.errorMessage.set('Failed to load prepared Chennai storm library.');
+        this.errorMessage.set(this.readableFailure(err, 'Prepared Chennai storm events are unavailable.'));
         return throwError(() => err);
       })
     );
@@ -76,10 +76,20 @@ export class DnoService {
       }),
       catchError(err => {
         this.isPredicting.set(false);
-        this.errorMessage.set('DNO hydrodynamic inference failed or tensor unavailable.');
+        this.errorMessage.set(this.readableFailure(err, 'DNO inference failed; no forecast was produced.'));
         return throwError(() => err);
       })
     );
+  }
+
+  private readableFailure(error: any, fallback: string): string {
+    const detail = error?.error?.detail;
+    if (typeof detail === 'string' && /checkpoint.*unavailable/i.test(detail)) {
+      return 'DNO forecast unavailable: the required model checkpoint is missing from this backend deployment.';
+    }
+    if (error?.status === 0) return 'DNO backend is not reachable. Start the backend and check its connection.';
+    if (error?.status === 503) return 'DNO forecast service is unavailable. Check backend model readiness.';
+    return fallback;
   }
 
   /**

@@ -1,9 +1,7 @@
 import { Component, OnInit, AfterViewInit, OnDestroy, ElementRef, ViewChild, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { HttpClient } from '@angular/common/http';
 import { RouterLink, Router } from '@angular/router';
 import * as L from 'leaflet';
-import { environment } from '../../../environments/environment';
 
 import { FloodService } from '../../core/services/flood.service';
 import { AlertService } from '../../core/services/alert.service';
@@ -18,6 +16,8 @@ import { AlertCardComponent } from '../../shared/components/alert-card/alert-car
 import { TimeSelectorComponent } from '../../shared/components/time-selector/time-selector.component';
 import { MapLegendComponent } from '../../shared/components/map-legend/map-legend.component';
 import { LoadingStateComponent } from '../../shared/components/loading-state/loading-state.component';
+import { RainfallApiService } from '../../core/services/rainfall-api.service';
+import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../core/models/rainfall.model';
 
 @Component({
   selector: 'app-dashboard',
@@ -70,8 +70,8 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
           <!-- KPI 1: Current Rainfall -->
           <app-stat-card
             title="Current Rainfall"
-            [value]="kpis.currentRainfall"
-            unit="mm/hr"
+            [value]="kpis.currentRainfall ?? 'Unavailable'"
+            unit="mm (preceding hour)"
             [delta]="kpis.rainfallDelta"
             statusType="caution"
           >
@@ -267,23 +267,29 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
         </div>
       </div>
 
-      <!-- Detailed Weather Telemetry Console (GCC AWS & Atmospheric Sensors) -->
+      <!-- Open-Meteo model estimate for the configured Chennai monitoring point -->
       <div class="card weather-telemetry-card">
         <div class="card-header weather-header">
           <div class="weather-title-group">
             <div class="weather-badge-row">
-              <span class="badge-live-pulse"><span class="pulse-dot"></span> LIVE SATELLITE-NWP FUSION</span>
-              <span class="badge-radar font-mono">500m HIGH-RES QPE ONLINE</span>
-              <span class="badge-source font-mono">ECMWF & GCC MULTI-SENSOR</span>
+              <span class="badge-live-pulse"><span class="pulse-dot"></span> {{ weatherStatusLabel }}</span>
+              <span class="badge-radar font-mono">OPEN-METEO</span>
+              <span class="badge-source font-mono">{{ weatherDataTypeLabel }}</span>
             </div>
             <h3 class="card-title">Detailed Weather Telemetry & Basin Hydrology</h3>
             <p class="card-subtitle">
-              Continuous high-resolution satellite-NWP precipitation estimates, real-time soil moisture saturation, and GCC AWS in-situ telemetry
+              Provider model estimates for the selected Chennai point. They are not rain-gauge observations or city-wide rainfall coverage.
             </p>
           </div>
           <div class="weather-actions">
+            <label class="sr-only" for="rain-location">Monitoring location</label>
+            <select id="rain-location" class="form-select" [value]="selectedWeatherLocation" (change)="selectWeatherLocation($event)">
+              @for (loc of weatherLocations; track loc.id) {
+                <option [value]="loc.id">{{ loc.name }}</option>
+              }
+            </select>
             <button type="button" class="btn btn-secondary btn-sm" (click)="refreshWeather()">
-              ↻ Refresh Telemetry
+              ↻ Refresh Weather
             </button>
           </div>
         </div>
@@ -291,59 +297,79 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
         <!-- Atmospheric Parameters Bar -->
         <div class="atm-params-strip">
           <div class="atm-item">
-            <span class="atm-label">Ambient Temperature</span>
-            <span class="atm-val font-mono">{{ cityWeather.temp }} °C</span>
+            <span class="atm-label">Temperature</span>
+            <span class="atm-val font-mono">{{ cityWeather.temp ?? '—' }} °C</span>
           </div>
           <div class="atm-item">
             <span class="atm-label">Relative Humidity</span>
-            <span class="atm-val font-mono">{{ cityWeather.humidity }}%</span>
+            <span class="atm-val font-mono">{{ cityWeather.humidity ?? '—' }}%</span>
           </div>
           <div class="atm-item">
             <span class="atm-label">Atm. Pressure</span>
-            <span class="atm-val font-mono">{{ cityWeather.pressure }} hPa</span>
+            <span class="atm-val font-mono">—</span>
           </div>
           <div class="atm-item">
             <span class="atm-label">Wind Vector</span>
-            <span class="atm-val font-mono">{{ cityWeather.wind }}</span>
+            <span class="atm-val font-mono">{{ cityWeather.wind ?? '—' }}</span>
           </div>
           <div class="atm-item">
-            <span class="atm-label">Satellite-NWP Virtual Radar</span>
-            <span class="atm-val font-mono text-cyan">{{ cityWeather.radarDwr }}</span>
+            <span class="atm-label">Precipitation (preceding hour)</span>
+            <span class="atm-val font-mono text-cyan">{{ weatherCurrent?.precipitation_mm ?? '—' }} mm</span>
           </div>
           <div class="atm-item">
             <span class="atm-label">Soil Saturation</span>
-            <span class="atm-val font-mono text-warning">{{ cityWeather.soilSaturation }}</span>
+            <span class="atm-val font-mono text-warning">Unavailable</span>
           </div>
         </div>
 
-        <!-- 8 GCC AWS Stations Grid -->
-        <div class="aws-stations-section">
-          <div class="aws-stations-title">
-            <span>Automated Weather Stations (AWS) Live Rain Rates</span>
-            <span class="aws-count font-mono">{{ awsStations.length }} Active Stations</span>
+        <div class="rainfall-live-panel">
+          <div class="rainfall-live-heading">
+            <div><strong>{{ weatherLocationName }}</strong> · {{ weatherCoordinates }}</div>
+            <span [class.stale-data]="weatherIsStale">{{ weatherStatusLabel }}</span>
           </div>
-          <div class="aws-grid">
-            @for (st of awsStations; track st.id) {
-              <div class="aws-card">
-                <div class="aws-card-top">
-                  <span class="aws-station-name">{{ st.name }}</span>
-                  <span class="aws-status-tag">{{ st.status }}</span>
-                </div>
-                <div class="aws-card-metrics">
-                  <div class="aws-metric">
-                    <span class="m-val font-mono" [class.text-danger]="st.rain_rate_mm_h >= 28" [class.text-warning]="st.rain_rate_mm_h < 28 && st.rain_rate_mm_h >= 22">
-                      {{ st.rain_rate_mm_h }}
-                    </span>
-                    <span class="m-unit">mm/h live</span>
-                  </div>
-                  <div class="aws-metric">
-                    <span class="m-val font-mono text-muted">{{ st.rain_24h_mm }}</span>
-                    <span class="m-unit">mm / 24h</span>
-                  </div>
+          <div class="weather-diagnostics" aria-live="polite">
+            <span>Connection: <strong>{{ weatherConnectionLabel }}</strong></span>
+            <span>Current rainfall: <strong>{{ weatherCurrentAvailable ? (weatherCurrent?.precipitation_mm + ' mm') : 'Unavailable' }}</strong></span>
+            <span>Cache: <strong>{{ weatherCacheLabel }}</strong></span>
+            <span>Last successful retrieval: <strong>{{ weatherLastSuccessAt || 'None recorded' }}</strong></span>
+            <span>Last failed refresh: <strong>{{ weatherLastFailureAt || 'None recorded' }}</strong></span>
+            <span>Provider timestamp: <strong>{{ weatherProviderTimestamp || 'Unavailable' }}</strong></span>
+            <span>Hourly forecast: <strong>{{ weatherForecastIsStale ? 'Cached forecast is stale' : (weatherHourly.length ? 'Available' : 'Unavailable') }}</strong></span>
+            <span>Forecast cache age: <strong>{{ weatherForecastCacheAge }}</strong></span>
+          </div>
+          @if (weatherError) { <div class="weather-error" role="alert"><span>{{ weatherError }}</span><button type="button" class="btn btn-secondary btn-sm" (click)="refreshWeather()">Retry</button></div> }
+          @if (weatherLoading && !weatherHourly.length) {
+            <div class="rainfall-skeleton" aria-label="Loading rainfall telemetry"><span></span><span></span><span></span><span></span></div>
+          }
+          @else if (weatherChartAvailable) {
+            <div class="rainfall-chart-wrap">
+              <div class="rainfall-chart-toolbar">
+                <div class="rainfall-chart-title">Next {{ weatherHourly.slice(0, 48).length }} hours · Open-Meteo model forecast</div>
+                <div class="rainfall-chart-switch" role="group" aria-label="Forecast chart measure">
+                  <button type="button" [class.active]="rainChartMetric === 'rainfall'" (click)="setRainChartMetric('rainfall')">Rainfall (mm)</button>
+                  <button type="button" [class.active]="rainChartMetric === 'probability'" (click)="setRainChartMetric('probability')">Probability (%)</button>
                 </div>
               </div>
-            }
-          </div>
+              <svg viewBox="0 0 600 150" role="img" aria-label="Hourly precipitation forecast chart" preserveAspectRatio="none">
+                <path [attr.d]="rainChartPoints" fill="none" stroke="#1684e8" stroke-width="3" />
+                @for (point of weatherHourly.slice(0, 48); track point.timestamp; let idx = $index) {
+                  @if (chartValue(point) != null) {
+                    <circle [attr.cx]="chartX(idx)" [attr.cy]="chartY(point)" r="3.5" fill="#38bdf8">
+                      <title>{{ formatChennaiTimestamp(point.timestamp) }} · {{ chartTooltip(point) }}</title>
+                    </circle>
+                  }
+                }
+              </svg>
+            </div>
+            <div class="rainfall-hourly-grid">
+              @for (hour of weatherHourly.slice(0, 12); track hour.timestamp) {
+                <div [title]="formatChennaiTimestamp(hour.timestamp)"><strong>{{ hour.precipitation_mm ?? '—' }} mm</strong><span>{{ hour.timestamp | date:'EEE HH:mm':'Asia/Kolkata' }}</span>
+                  <small>Chance {{ hour.precipitation_probability ?? '—' }}%</small></div>
+              }
+            </div>
+          } @else {
+            <p class="weather-empty">{{ weatherStatusLabel }}. No validated hourly forecast is available.</p>
+          }
         </div>
       </div>
 
@@ -450,7 +476,7 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
         <div class="dno-card-header">
           <div class="dno-title-group">
             <div class="dno-badge-row">
-              <span class="dno-pill-pulse"><span class="pulse-dot-cyan"></span> AI HYDRODYNAMIC NOWCAST</span>
+              <span class="dno-pill-pulse"><span class="pulse-dot-cyan"></span> EXPERIMENTAL HYDRODYNAMIC MODULE</span>
               <span class="dno-tag font-mono">CHENNAI PHASE 7C DNO</span>
               <span class="dno-tag font-mono">ALPHA = 1.00</span>
               <span class="dno-tag font-mono">128 × 128 (78.1m)</span>
@@ -473,7 +499,7 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
                 class="dno-event-select font-mono"
                 [value]="dnoService.selectedEventId()"
                 (change)="onDnoEventChange($event)"
-                [disabled]="dnoService.isPredicting()"
+                [disabled]="dnoService.isPredicting() || !dnoService.availableEvents()?.events?.length"
               >
                 @for (ev of dnoService.availableEvents()?.events; track ev.id) {
                   <option [value]="ev.id">
@@ -486,7 +512,7 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
               type="button"
               class="btn btn-primary dno-run-btn"
               (click)="runDnoForecast()"
-              [disabled]="dnoService.isPredicting()"
+              [disabled]="dnoService.isPredicting() || !dnoService.availableEvents()?.events?.length"
             >
               @if (dnoService.isPredicting()) {
                 <span class="btn-spinner"></span> Simulating Hydrodynamics...
@@ -930,146 +956,24 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
         </div>
       </div>
 
-      <!-- Lower Section: Real-Time Flood Prediction & Physical Inundation ETA Showcase -->
+      <!-- Physical inundation estimates require a connected, calibrated solver. -->
       <div class="card eta-prediction-card">
         <div class="card-header eta-header">
           <div>
             <div class="title-with-badge">
-              <span class="badge status-unsafe font-mono">PHYSICAL HYDROLOGIC MODEL</span>
-              <h3 class="card-title">Real-Time Flood Prediction & Inundation ETA Engine</h3>
+              <span class="badge status-caution font-mono">NOT CONNECTED</span>
+              <h3 class="card-title">Physical Inundation Depth & ETA</h3>
             </div>
             <p class="card-subtitle">
-              Calculates surface inundation onset (physical ETA in minutes) across Greater Chennai low-lying basins, considering live rainfall loading vs. storm water drain evacuation capacity.
+              A calibrated hydrodynamic solver and measured catchment storage inputs are not connected. FloodWatch cannot provide a verified water-depth or inundation-time estimate here.
             </p>
           </div>
-          <div class="eta-controls-group">
-            <div class="eta-input-wrap">
-              <label class="eta-input-label">Live Rainfall Rate (mm/h):</label>
-              <div class="slider-row">
-                <input
-                  type="range"
-                  min="10"
-                  max="120"
-                  step="5"
-                  [value]="predRainRate"
-                  (input)="onRainRateChange($event)"
-                  class="eta-slider"
-                />
-                <span class="eta-slider-val font-mono">{{ predRainRate }} mm/h</span>
-              </div>
-            </div>
-            <div class="eta-input-wrap">
-              <label class="eta-input-label">24h Antecedent Rain (mm):</label>
-              <div class="slider-row">
-                <input
-                  type="range"
-                  min="0"
-                  max="250"
-                  step="10"
-                  [value]="predAccumulated"
-                  (input)="onAccumulatedChange($event)"
-                  class="eta-slider"
-                />
-                <span class="eta-slider-val font-mono">{{ predAccumulated }} mm</span>
-              </div>
-            </div>
-            <button
-              type="button"
-              class="btn btn-primary btn-pred-eta"
-              (click)="runEtaPrediction()"
-              [disabled]="isPredictingEta"
-            >
-              @if (isPredictingEta) {
-                <span class="btn-spinner"></span> Computing Inundation ETA...
-              } @else {
-                ⚡ Predict Flood Risk & Physical ETA
-              }
-            </button>
+          <div class="data-unavailable-panel">
+            <strong>Water depth: unavailable · Inundation ETA: unavailable</strong>
+            <span>Open-Meteo rainfall is a point weather estimate. It is not sufficient to calculate basin flooding without validated antecedent catchment rainfall, storage, drainage capacity, and an operational solver.</span>
+            <a routerLink="/simulation" class="eta-link">Open Storm Scenario Studio →</a>
           </div>
         </div>
-
-        <!-- Quick Storm Presets Bar -->
-        <div class="presets-row">
-          <span class="presets-label">Storm Simulation Presets:</span>
-          <button type="button" class="preset-pill" (click)="setPreset(20, 30)">Moderate Rain (20 mm/h)</button>
-          <button type="button" class="preset-pill" (click)="setPreset(45, 80)">Heavy Monsoon (45 mm/h)</button>
-          <button type="button" class="preset-pill alert-pill" (click)="setPreset(95, 180)">2015 Cloudburst (95 mm/h)</button>
-        </div>
-
-        <!-- Prediction & Physical ETA Results Showcase -->
-        @if (etaResults) {
-          <div class="eta-results-showcase">
-            <div class="eta-summary-bar">
-              <div class="summary-stat">
-                <span class="s-label">Monitored Basins</span>
-                <span class="s-val font-mono">{{ etaResults.monitored_localities_count }}</span>
-              </div>
-              <div class="summary-stat">
-                <span class="s-label">Flooding Basins</span>
-                <span class="s-val font-mono text-danger">{{ etaResults.flooding_localities_count }}</span>
-              </div>
-              <div class="summary-stat">
-                <span class="s-label">Live Rainfall Intensity</span>
-                <span class="s-val font-mono">{{ etaResults.rainfall_rate_mm_h }} mm/h</span>
-              </div>
-              <div class="summary-stat">
-                <span class="s-label">Drainage Net Hydraulic Balance</span>
-                <span class="s-val font-mono" [class.text-danger]="etaResults.flooding_localities_count > 0" [class.text-success]="etaResults.flooding_localities_count === 0">
-                  {{ etaResults.flooding_localities_count > 0 ? 'NET INFLOW > EVACUATION (SURCHARGE)' : 'INFILTRATION & SWD ADEQUATE' }}
-                </span>
-              </div>
-            </div>
-
-            <div class="eta-grid">
-              @for (pred of etaResults.predictions; track pred.locality) {
-                <div class="eta-card" [class.is-flooding]="pred.flood_occurring" [class.is-safe]="!pred.flood_occurring">
-                  <div class="eta-card-header">
-                    <div>
-                      <h4 class="locality-name">{{ pred.locality }}</h4>
-                      <span class="locality-elev font-mono">Topographic Elevation: {{ pred.elevation_m }}m MSL</span>
-                    </div>
-                    <span
-                      class="eta-status-pill font-mono"
-                      [class.pill-danger]="pred.status === 'ACTIVE_OVERTOPPING'"
-                      [class.pill-warning]="pred.status === 'IMMINENT_SURCHARGE' || pred.status === 'WATCH'"
-                      [class.pill-success]="pred.status === 'SAFE'"
-                    >
-                      {{ pred.status === 'ACTIVE_OVERTOPPING' ? 'FLOOD ACTIVE' : pred.status === 'IMMINENT_SURCHARGE' ? 'SURCHARGE IMMINENT' : pred.status === 'WATCH' ? 'WATCH / ELEVATED' : 'SAFE' }}
-                    </span>
-                  </div>
-
-                  <div class="eta-time-banner">
-                    <div class="eta-clock-icon">⏱</div>
-                    <div class="eta-time-info">
-                      <span class="eta-time-label">Surface Inundation Time Horizon (ETA)</span>
-                      <span class="eta-time-val font-mono" [class.text-danger]="pred.flood_occurring" [class.text-success]="!pred.flood_occurring">
-                        {{ pred.eta_display }}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div class="eta-hydraulic-breakdown">
-                    <div class="h-row">
-                      <span class="h-label">SWD Evacuation Capacity:</span>
-                      <span class="h-val font-mono">{{ pred.drainage_evacuation_mm_h }} mm/h</span>
-                    </div>
-                    <div class="h-row">
-                      <span class="h-label">Net Depression Filling Rate:</span>
-                      <span class="h-val font-mono" [class.text-danger]="pred.net_filling_rate_mm_h > 0">
-                        {{ pred.net_filling_rate_mm_h > 0 ? '+' : '' }}{{ pred.net_filling_rate_mm_h }} mm/h
-                      </span>
-                    </div>
-                  </div>
-
-                  <div class="eta-card-footer">
-                    <a routerLink="/drainage" class="eta-link">Inspect 3D Drainage →</a>
-                    <a routerLink="/simulation" class="eta-link">Storm Scenario Studio →</a>
-                  </div>
-                </div>
-              }
-            </div>
-          </div>
-        }
       </div>
     </div>
   `,
@@ -1749,6 +1653,30 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
       flex-wrap: wrap;
       gap: 1rem;
     }
+    .weather-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+    .weather-actions select { max-width: 19rem; }
+    .rainfall-live-panel { padding: 1rem 1.25rem; }
+    .rainfall-live-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; color: var(--text-dim); font-size: 0.8rem; }
+    .rainfall-live-heading strong { color: var(--text-main); }
+    .stale-data { color: #d97706; }
+    .weather-error { display: flex; justify-content: space-between; align-items: center; gap: .75rem; color: #dc2626; padding: .7rem .85rem; border-radius: var(--radius-sm); background: rgba(220,38,38,.08); }
+    .weather-diagnostics { display: flex; flex-wrap: wrap; gap: 0.45rem 1rem; padding: 0.75rem 0; color: var(--text-dim); font-size: 0.72rem; }
+    .weather-diagnostics strong { color: var(--text-main); font-weight: 600; }
+    .weather-empty { color: var(--text-dim); }
+    .rainfall-chart-wrap { margin-top: 1rem; }
+    .rainfall-chart-toolbar { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
+    .rainfall-chart-switch { display: inline-flex; gap: .25rem; padding: .2rem; border: 1px solid var(--border-light); border-radius: var(--radius-sm); }
+    .rainfall-chart-switch button { border: 0; border-radius: 4px; padding: .35rem .6rem; color: var(--text-dim); background: transparent; cursor: pointer; font-size: .72rem; }
+    .rainfall-chart-switch button.active { color: var(--text-main); background: rgba(56,189,248,.16); }
+    .rainfall-skeleton { display: grid; grid-template-columns: repeat(4, 1fr); gap: .6rem; padding: 1rem 0; }
+    .rainfall-skeleton span { min-height: 3.5rem; border-radius: var(--radius-sm); background: linear-gradient(90deg, rgba(148,163,184,.10), rgba(148,163,184,.22), rgba(148,163,184,.10)); background-size: 200% 100%; animation: rainfall-shimmer 1.3s linear infinite; }
+    @keyframes rainfall-shimmer { to { background-position: -200% 0; } }
+    .rainfall-chart-title { color: var(--text-dim); font-size: 0.78rem; margin-bottom: 0.5rem; }
+    .rainfall-chart-wrap svg { width: 100%; height: 9rem; overflow: visible; background: linear-gradient(180deg, rgba(56,189,248,.12), transparent); border-bottom: 1px solid var(--border-light); }
+    .rainfall-hourly-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(6.6rem, 1fr)); gap: 0.45rem; margin-top: 0.75rem; }
+    .rainfall-hourly-grid > div { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.55rem; border-radius: var(--radius-sm); background: rgba(148,163,184,.1); }
+    .rainfall-hourly-grid strong { color: var(--text-main); font-size: 0.8rem; }
+    .rainfall-hourly-grid span, .rainfall-hourly-grid small { color: var(--text-dim); font-size: 0.67rem; }
     .weather-badge-row {
       display: flex;
       align-items: center;
@@ -2585,7 +2513,7 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
 export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
   @ViewChild('miniMapContainer') miniMapContainer!: ElementRef;
 
-  private http: HttpClient = inject(HttpClient);
+  private readonly rainfallApi = inject(RainfallApiService);
   public dnoService: DnoService = inject(DnoService);
 
   layerDno = true;
@@ -2612,38 +2540,38 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
   layerDrainage = true;
   layerRoutes = false;
 
-  // Weather Telemetry
-  awsStations: any[] = [
-    { id: 'AWS-01', name: 'Chennai Airport (Meenambakkam)', rain_rate_mm_h: 26.5, rain_24h_mm: 72.0, status: 'ACTIVE' },
-    { id: 'AWS-02', name: 'Nungambakkam RMC', rain_rate_mm_h: 24.0, rain_24h_mm: 64.5, status: 'ACTIVE' },
-    { id: 'AWS-03', name: 'Chembarambakkam Reservoir', rain_rate_mm_h: 32.5, rain_24h_mm: 88.0, status: 'ACTIVE' },
-    { id: 'AWS-04', name: 'Tambaram Airfield AWS', rain_rate_mm_h: 28.0, rain_24h_mm: 76.5, status: 'ACTIVE' },
-    { id: 'AWS-05', name: 'Alandur Storm Station', rain_rate_mm_h: 25.8, rain_24h_mm: 69.2, status: 'ACTIVE' },
-    { id: 'AWS-06', name: 'Kolathur North Basin', rain_rate_mm_h: 21.5, rain_24h_mm: 58.0, status: 'ACTIVE' },
-    { id: 'AWS-07', name: 'Anna University Tech AWS', rain_rate_mm_h: 25.0, rain_24h_mm: 66.0, status: 'ACTIVE' },
-    { id: 'AWS-08', name: 'T. Nagar Panagal Park', rain_rate_mm_h: 29.5, rain_24h_mm: 78.2, status: 'ACTIVE' }
-  ];
-
-  cityWeather = {
-    temp: 28.2,
-    humidity: 91,
-    pressure: 1004.8,
-    wind: '18.5 km/h ENE (Onshore)',
-    radarDwr: '24.5 mm/h (Fused QPE)',
-    soilSaturation: 'Unavailable',
-    tidalLock: 'High Tide Lock (+0.82m MSL)'
-  };
+  // Dynamic Open-Meteo point estimate and hourly forecast.
+  weatherLocations: RainfallLocation[] = [];
+  selectedWeatherLocation = '';
+  weatherCurrent: RainfallReading | null = null;
+  weatherHourly: RainfallForecastHour[] = [];
+  weatherLoading = false;
+  weatherError = '';
+  weatherFetchedAt = '';
+  weatherLastSuccessAt = '';
+  weatherLastFailureAt = '';
+  weatherProviderTimestamp = '';
+  weatherIsStale = false;
+  weatherForecastIsStale = false;
+  weatherForecastCacheAge = 'Unknown';
+  weatherStatusLabel = 'WEATHER UNAVAILABLE';
+  weatherConnectionLabel = 'Checking';
+  weatherCacheLabel = 'No cached reading';
+  weatherDataTypeLabel = 'MODEL ESTIMATE';
+  weatherLocationName = 'Chennai reference point';
+  weatherCoordinates = '—';
+  cityWeather: { temp: number | null; humidity: number | null; pressure: number | null; wind: string | null } =
+    { temp: null, humidity: null, pressure: null, wind: null };
+  rainChartPoints = '';
+  rainChartMetric: 'rainfall' | 'probability' = 'rainfall';
+  private rainPointMarker?: L.CircleMarker;
+  private weatherRefreshTimer?: ReturnType<typeof setInterval>;
+  private weatherRefreshIntervalSeconds = 3600;
 
   soilSaturationPct: number | null = null;
   soilMoistureM3M3: number | null = null;
   soilTelemetryStatus = 'UNAVAILABLE';
   soilTelemetrySource = 'Waiting for rainfall telemetry';
-
-  // Physical Flood Prediction & ETA
-  predRainRate = 42.0;
-  predAccumulated = 75.0;
-  isPredictingEta = false;
-  etaResults: any = null;
 
   private map?: L.Map;
   private zoneLayersGroup = L.layerGroup();
@@ -2662,138 +2590,226 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
     this.loadAlerts();
     this.loadRecentPredictions();
     this.loadWeatherTelemetry();
-    this.runEtaPrediction();
     this.loadDnoHealthAndEvents();
   }
 
   loadWeatherTelemetry(): void {
-    this.http.get<any>(`${environment.apiBaseUrl}/api/v1/rainfall/telemetry-details`).subscribe({
+    this.weatherLoading = true;
+    this.weatherError = '';
+    this.rainfallApi.locations().subscribe({
       next: res => {
-        if (res && res.aws_stations) {
-          this.awsStations = res.aws_stations;
-        }
-        if (res && res.city_aggregate) {
-          const ca = res.city_aggregate;
-          const rawSatPct = ca.soil_saturation_pct;
-          const satPct = typeof rawSatPct === 'number' && Number.isFinite(rawSatPct) ? rawSatPct : null;
-          this.soilSaturationPct = satPct;
-          this.soilMoistureM3M3 = typeof ca.soil_moisture_m3_m3 === 'number' && Number.isFinite(ca.soil_moisture_m3_m3)
-            ? ca.soil_moisture_m3_m3
-            : null;
-          this.soilTelemetryStatus = satPct === null
-            ? 'UNAVAILABLE'
-            : String(ca.soil_data_status ?? 'GRID_ESTIMATE').replaceAll('_', ' ');
-          this.soilTelemetrySource = String(ca.soil_source ?? res.source ?? 'Satellite/NWP regional grid');
-          this.cityWeather = {
-            temp: ca.ambient_temperature_c,
-            humidity: ca.relative_humidity_pct,
-            pressure: ca.barometric_pressure_hpa,
-            wind: `${ca.wind_speed_kmh} km/h ${ca.wind_direction}`,
-            radarDwr: `${ca.mean_rainfall_rate_mm_h} mm/h (Fused QPE)`,
-            soilSaturation: satPct === null ? 'Unavailable' : `${satPct.toFixed(1)}% (${satPct >= 80 ? 'Saturated' : 'Normal'})`,
-            tidalLock: ca.tidal_boundary_status
-          };
-        }
+        this.weatherLocations = Array.isArray(res?.locations) ? res.locations : [];
+        this.weatherRefreshIntervalSeconds = Math.max(60, Number(res?.refresh_interval_seconds ?? this.weatherRefreshIntervalSeconds));
+        if (!this.selectedWeatherLocation && this.weatherLocations.length) this.selectedWeatherLocation = this.weatherLocations[0].id;
+        this.fetchSelectedWeather();
+        if (this.weatherRefreshTimer) clearInterval(this.weatherRefreshTimer);
+        this.weatherRefreshTimer = setInterval(() => this.fetchSelectedWeather(), this.weatherRefreshIntervalSeconds * 1000);
+      },
+      error: () => { this.weatherLoading = false; this.weatherError = 'Weather location configuration is unavailable.'; }
+    });
+  }
+
+  selectWeatherLocation(event: Event): void {
+    this.selectedWeatherLocation = (event.target as HTMLSelectElement).value;
+    this.fetchSelectedWeather();
+  }
+
+  private fetchSelectedWeather(): void {
+    if (!this.selectedWeatherLocation) { this.weatherLoading = false; return; }
+    const loc = this.weatherLocations.find(item => item.id === this.selectedWeatherLocation);
+    this.weatherLocationName = loc?.name ?? 'Selected location';
+    this.weatherCoordinates = loc ? `${Number(loc.latitude).toFixed(5)}, ${Number(loc.longitude).toFixed(5)}` : '—';
+    this.rainfallApi.current(this.selectedWeatherLocation).subscribe({
+      next: current => {
+        this.weatherCurrent = current;
+        this.weatherProviderTimestamp = this.formatChennaiTimestamp(current.timestamp);
+        this.weatherFetchedAt = this.formatChennaiTimestamp(current.fetched_at);
+        this.weatherLastSuccessAt = this.weatherFetchedAt;
+        this.weatherLastFailureAt = this.formatChennaiTimestamp(current.last_failed_refresh_at);
+        this.weatherIsStale = Boolean(current.is_stale) || current.status === 'stale';
+        this.weatherStatusLabel = this.weatherStatusText(current.status, current.failure_type);
+        this.updateRainfallKpiProvenance(current.status, current.precipitation_mm, current.fetched_at);
+        this.weatherConnectionLabel = current.status === 'success' ? 'Connected' :
+          (current.status === 'cached' ? 'Using saved response; refresh not confirmed' : 'Unavailable');
+        this.weatherCacheLabel = current.cached_data_available
+          ? (this.weatherIsStale ? 'Available · stale' : (current.freshness === 'cached' ? 'Available · restored from database' : 'Available · recent'))
+          : 'No cached reading';
+        if (current.error) this.weatherError = this.weatherDiagnosticMessage(current.failure_type);
+        this.cityWeather = { temp: current.temperature_c ?? null, humidity: current.humidity_percent ?? null,
+          pressure: null, wind: current.wind_speed_kmh == null ? null : `${current.wind_speed_kmh} km/h` };
+        this.soilSaturationPct = null;
+        this.soilMoistureM3M3 = null;
+        this.soilTelemetryStatus = 'UNAVAILABLE';
+        this.soilTelemetrySource = 'No soil moisture product is connected';
+        this.applyRainfallPointToMap(current);
       },
       error: () => {
-        // Fallback already pre-initialized
+        this.weatherError = 'Could not retrieve rainfall from the FloodWatch backend. The last displayed reading is retained when available.';
+        this.weatherConnectionLabel = 'Backend unavailable';
+        if (this.weatherCurrent) { this.weatherIsStale = true; this.weatherStatusLabel = 'CACHED DATA · BACKEND UNAVAILABLE'; this.weatherCacheLabel = 'Last reading retained · stale'; }
+        else this.weatherStatusLabel = 'WEATHER UNAVAILABLE';
       }
     });
+    this.rainfallApi.status(this.selectedWeatherLocation).subscribe({
+      next: status => {
+        this.weatherConnectionLabel = status.status === 'success' ? 'Connected' :
+          (status.status === 'cached' ? 'Saved data available; provider refresh not confirmed' : 'Unavailable');
+        this.weatherIsStale = Boolean(status.is_stale) || status.status === 'stale';
+        this.weatherLastSuccessAt = this.formatChennaiTimestamp(status.last_successful_fetch_at);
+        this.weatherLastFailureAt = this.formatChennaiTimestamp(status.last_failed_refresh_at);
+        this.weatherCacheLabel = status.cached_data_available
+          ? (this.weatherIsStale ? 'Available · stale' : (status.freshness === 'cached' ? 'Available · restored from database' : 'Available · recent'))
+          : 'No cached reading';
+        this.weatherStatusLabel = this.weatherStatusText(status.status, status.failure_type);
+        this.weatherForecastIsStale = Boolean(status.forecast_is_stale);
+        this.weatherForecastCacheAge = this.formatCacheAge(status.forecast_cache_age_seconds);
+        this.updateRainfallKpiProvenance(status.status, this.weatherCurrent?.precipitation_mm, status.last_successful_fetch_at);
+        if (status.error) this.weatherError = this.weatherDiagnosticMessage(status.failure_type);
+      },
+      error: () => {
+        this.weatherConnectionLabel = 'Status unavailable';
+        if (this.weatherCurrent) { this.weatherIsStale = true; this.weatherCacheLabel = 'Last reading retained · freshness unconfirmed'; }
+      }
+    });
+    this.rainfallApi.hourly(this.selectedWeatherLocation).subscribe({
+      next: forecast => {
+        this.weatherHourly = forecast.status === 'success' || forecast.status === 'stale' || forecast.status === 'cached' ? (forecast.hourly ?? []) : [];
+        this.weatherForecastCacheAge = this.formatCacheAge(forecast.forecast_cache_age_seconds);
+        this.weatherForecastIsStale = Boolean(forecast.forecast_is_stale) ||
+          this.weatherHourly.some((hour: any) => this.timestampAgeSeconds(hour.fetched_at) > this.weatherRefreshIntervalSeconds);
+        this.weatherDataTypeLabel = `FORECAST · ${forecast.forecast_hours_available ?? 0} HOURS`;
+        this.rainChartPoints = this.buildRainChart(this.weatherHourly.slice(0, 48));
+        this.weatherLoading = false;
+      },
+      error: () => {
+        this.weatherForecastIsStale = this.weatherHourly.length > 0;
+        this.weatherLoading = false;
+        if (!this.weatherError) this.weatherError = 'Could not refresh the hourly forecast. Previously loaded forecast data is retained when available.';
+      }
+    });
+  }
+
+  get weatherCurrentAvailable(): boolean {
+    return typeof this.weatherCurrent?.precipitation_mm === 'number' && Number.isFinite(this.weatherCurrent.precipitation_mm);
+  }
+
+  get weatherChartAvailable(): boolean {
+    return this.weatherHourly.slice(0, 48).some(hour => this.chartValue(hour) !== null);
+  }
+
+  private formatCacheAge(seconds?: number | null): string {
+    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return 'Unknown';
+    if (seconds < 60) return `${Math.round(seconds)} sec`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} min`;
+    return `${Math.floor(seconds / 3600)} hr ${Math.floor((seconds % 3600) / 60)} min`;
+  }
+
+  private weatherStatusText(status: string, failureType?: string | null): string {
+    if (status === 'success') return 'LIVE PROVIDER RESPONSE';
+    if (status === 'cached') return 'CACHED RESPONSE · REFRESH NOT CONFIRMED';
+    if (status === 'stale') return `STALE CACHED RESPONSE · ${String(failureType ?? 'provider').toUpperCase()} FAILURE`;
+    return `WEATHER UNAVAILABLE · ${String(failureType ?? 'provider').toUpperCase()} FAILURE`;
+  }
+
+  private updateRainfallKpiProvenance(status: string, value: number | null | undefined, fetchedAt?: string | null): void {
+    if (!this.kpis) return;
+    let rainfallDelta = this.kpis.rainfallDelta;
+    if (status === 'cached' || status === 'stale') {
+      const time = this.formatChennaiTimestamp(fetchedAt);
+      rainfallDelta = `Cached model estimate${time ? ` · retrieved ${time}` : ''}`;
+    } else if (status === 'unavailable' && value == null) {
+      rainfallDelta = 'Live rainfall unavailable';
+      this.kpis = { ...this.kpis, currentRainfall: null };
+    }
+    if (rainfallDelta !== this.kpis.rainfallDelta) this.kpis = { ...this.kpis, rainfallDelta };
+  }
+
+  private weatherDiagnosticMessage(failureType?: string | null): string {
+    const messages: Record<string, string> = {
+      dns: 'FloodWatch could not resolve the Open-Meteo host. Check this Mac’s internet and DNS settings.',
+      network: 'FloodWatch could not connect to Open-Meteo. Check internet access, VPN, proxy, or firewall settings.',
+      timeout: 'Open-Meteo did not respond before the request timed out. Cached rainfall is shown when available.',
+      rate_limit: 'Open-Meteo rate-limited this request. FloodWatch will retry after its configured refresh interval.',
+      provider: 'Open-Meteo is temporarily unavailable. Cached rainfall is shown when available.',
+      api_error: 'Open-Meteo rejected the request. Check the weather endpoint configuration and provider response.',
+      invalid_response: 'Open-Meteo returned a response that FloodWatch could not validate.'
+    };
+    return messages[failureType ?? ''] ?? 'The weather refresh failed. Cached rainfall is shown when available.';
+  }
+
+  formatChennaiTimestamp(value?: string | null): string {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat('en-IN', {
+      timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short'
+    }).format(date) + ' IST';
+  }
+
+  private timestampAgeSeconds(value?: string | null): number {
+    if (!value) return Number.POSITIVE_INFINITY;
+    const timestamp = new Date(value).getTime();
+    return Number.isFinite(timestamp) ? Math.max(0, (Date.now() - timestamp) / 1000) : Number.POSITIVE_INFINITY;
+  }
+
+  setRainChartMetric(metric: 'rainfall' | 'probability'): void {
+    this.rainChartMetric = metric;
+    this.rainChartPoints = this.buildRainChart(this.weatherHourly.slice(0, 48));
+  }
+
+  chartValue(hour: RainfallForecastHour): number | null {
+    const value = this.rainChartMetric === 'rainfall' ? hour.precipitation_mm : hour.precipitation_probability;
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  chartTooltip(hour: RainfallForecastHour): string {
+    const value = this.chartValue(hour);
+    return value == null ? 'Value unavailable' : this.rainChartMetric === 'rainfall' ? `${value} mm` : `${value}% probability`;
+  }
+
+  chartX(index: number): number {
+    const count = Math.min(this.weatherHourly.length, 48);
+    return count <= 1 ? 300 : index * 600 / (count - 1);
+  }
+
+  chartY(hour: RainfallForecastHour): number {
+    const values = this.weatherHourly.slice(0, 48).map(item => this.chartValue(item)).filter((value): value is number => value !== null);
+    const max = this.rainChartMetric === 'probability' ? 100 : Math.max(...values, 1);
+    const value = this.chartValue(hour) ?? 0;
+    return 140 - value / max * 125;
+  }
+
+  private buildRainChart(values: RainfallForecastHour[]): string {
+    if (!values.length) return '';
+    const validValues = values.map(value => this.chartValue(value)).filter((value): value is number => value !== null);
+    if (!validValues.length) return '';
+    const max = this.rainChartMetric === 'probability' ? 100 : Math.max(...validValues, 1);
+    let segmentOpen = false;
+    return values.map((hour, i) => {
+      const value = this.chartValue(hour);
+      if (value === null) { segmentOpen = false; return ''; }
+      const command = segmentOpen ? 'L' : 'M';
+      segmentOpen = true;
+      return `${command}${this.chartX(i)},${140 - value / max * 125}`;
+    }).filter(Boolean).join(' ');
+  }
+
+  private applyRainfallPointToMap(reading: RainfallReading): void {
+    if (!this.map || typeof reading.latitude !== 'number' || typeof reading.longitude !== 'number') return;
+    if (this.rainPointMarker) this.map.removeLayer(this.rainPointMarker);
+    const amount = reading.precipitation_mm;
+    const locationName = typeof reading.location === 'string' ? reading.location : reading.location?.name;
+    const popupTime = this.formatChennaiTimestamp(reading.timestamp);
+    const popupSource = reading.data_source ?? 'Open-Meteo';
+    this.rainPointMarker = L.circleMarker([reading.latitude, reading.longitude], {
+      radius: 8, color: '#075985', weight: 2, fillColor: '#38bdf8', fillOpacity: 0.9
+    }).bindPopup(`<strong>${locationName ?? 'Weather point'}</strong><br/>Single-point model estimate · ${reading.status}<br/>Rainfall: ${amount == null ? 'unavailable' : `${amount} mm (preceding hour)`}<br/>Temperature: ${reading.temperature_c ?? 'unavailable'} °C<br/>Humidity: ${reading.humidity_percent ?? 'unavailable'}%<br/>Provider time: ${popupTime || 'unavailable'}<br/>Source: ${popupSource}<br/>${reading.latitude.toFixed(5)}, ${reading.longitude.toFixed(5)}`);
+    this.rainPointMarker.addTo(this.map);
   }
 
   refreshWeather(): void {
-    this.loadWeatherTelemetry();
-  }
-
-  onRainRateChange(event: any): void {
-    this.predRainRate = parseFloat(event.target.value);
-  }
-
-  onAccumulatedChange(event: any): void {
-    this.predAccumulated = parseFloat(event.target.value);
-  }
-
-  setPreset(rainRate: number, accumulated: number): void {
-    this.predRainRate = rainRate;
-    this.predAccumulated = accumulated;
-    this.runEtaPrediction();
-  }
-
-  runEtaPrediction(): void {
-    this.isPredictingEta = true;
-    this.http.get<any>(`${environment.apiBaseUrl}/api/v1/predict-eta`, {
-      params: {
-        rainfall_rate_mm_h: this.predRainRate.toString(),
-        accumulated_rainfall_mm: this.predAccumulated.toString()
-      }
-    }).subscribe({
-      next: res => {
-        this.etaResults = res;
-        this.isPredictingEta = false;
-      },
-      error: () => {
-        // Compute locally using physical formula if backend is unreachable
-        this.etaResults = this.computeLocalEta(this.predRainRate, this.predAccumulated);
-        this.isPredictingEta = false;
-      }
-    });
-  }
-
-  private computeLocalEta(rainRate: number, accumRain: number): any {
-    const keyLocalities = [
-      { name: 'Velachery South Basin', lat: 12.9815, lon: 80.2180, elevation_m: 4.8, storage_mm: 18.0, evac_rate_mm_h: 14.0 },
-      { name: 'Madipakkam Puzhuthivakkam', lat: 12.9640, lon: 80.1980, elevation_m: 5.2, storage_mm: 20.0, evac_rate_mm_h: 12.0 },
-      { name: 'Adyar Kotturpuram Corridor', lat: 13.0080, lon: 80.2450, elevation_m: 3.9, storage_mm: 15.0, evac_rate_mm_h: 16.0 },
-      { name: 'T. Nagar Panagal Park', lat: 13.0418, lon: 80.2341, elevation_m: 8.5, storage_mm: 28.0, evac_rate_mm_h: 22.0 },
-      { name: 'Perumbakkam Lowlands', lat: 12.8950, lon: 80.1920, elevation_m: 4.2, storage_mm: 16.0, evac_rate_mm_h: 10.0 },
-      { name: 'Kolathur North Basin', lat: 13.1238, lon: 80.2185, elevation_m: 6.1, storage_mm: 22.0, evac_rate_mm_h: 15.0 },
-      { name: 'Mudichur / Tambaram West', lat: 12.9150, lon: 80.0850, elevation_m: 5.0, storage_mm: 17.0, evac_rate_mm_h: 11.0 },
-      { name: 'Vyasarpadi Underpass', lat: 13.1185, lon: 80.2615, elevation_m: 3.5, storage_mm: 12.0, evac_rate_mm_h: 9.0 }
-    ];
-
-    const results = keyLocalities.map(loc => {
-      const infiltration = 2.5;
-      const effectiveEvac = loc.evac_rate_mm_h + infiltration;
-      const netFilling = rainRate - effectiveEvac;
-      const remainingStorage = Math.max(0, loc.storage_mm - (accumRain * 0.4));
-
-      let status = 'SAFE';
-      let etaDisplay = 'Safe / Draining';
-      let floodOccurring = false;
-
-      if (netFilling > 0) {
-        floodOccurring = true;
-        if (remainingStorage <= 0.5) {
-          status = 'ACTIVE_OVERTOPPING';
-          etaDisplay = 'Active Inundation (0 mins)';
-        } else {
-          const mins = Math.max(5, Math.round((remainingStorage / netFilling) * 60));
-          status = mins <= 30 ? 'IMMINENT_SURCHARGE' : 'WATCH';
-          etaDisplay = `ETA: ~${mins} mins`;
-        }
-      }
-
-      return {
-        locality: loc.name,
-        latitude: loc.lat,
-        longitude: loc.lon,
-        elevation_m: loc.elevation_m,
-        flood_occurring: floodOccurring,
-        status: status,
-        eta_display: etaDisplay,
-        net_filling_rate_mm_h: Math.round(netFilling * 10) / 10,
-        drainage_evacuation_mm_h: loc.evac_rate_mm_h
-      };
-    });
-
-    return {
-      rainfall_rate_mm_h: rainRate,
-      accumulated_rainfall_mm: accumRain,
-      monitored_localities_count: results.length,
-      flooding_localities_count: results.filter(r => r.flood_occurring).length,
-      predictions: results,
-      timestamp: new Date().toISOString()
-    };
+    if (this.selectedWeatherLocation) this.fetchSelectedWeather();
+    else this.loadWeatherTelemetry();
   }
 
   ngAfterViewInit(): void {
@@ -2814,6 +2830,7 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    if (this.weatherRefreshTimer) clearInterval(this.weatherRefreshTimer);
     if (this.dnoPlayTimer) {
       clearInterval(this.dnoPlayTimer);
       this.dnoPlayTimer = undefined;
@@ -2845,6 +2862,10 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
     this.floodService.getKPIs().subscribe({
       next: data => {
         this.kpis = data;
+        if (this.weatherCurrent) {
+          this.updateRainfallKpiProvenance(this.weatherCurrent.status, this.weatherCurrent.precipitation_mm,
+            this.weatherCurrent.fetched_at);
+        }
         this.loadingKpis = false;
       },
       error: () => {
@@ -2876,6 +2897,7 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
       attributionControl: false,
       preferCanvas: true
     });
+    if (this.weatherCurrent) this.applyRainfallPointToMap(this.weatherCurrent);
 
     L.control.zoom({ position: 'topright' }).addTo(this.map);
 

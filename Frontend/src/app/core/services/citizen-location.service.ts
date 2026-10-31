@@ -153,26 +153,26 @@ export class CitizenLocationService {
   }
 
   getSavedLocations(): Observable<SavedLocation[]> {
-    return this.http.get<SavedLocation[]>(`${this.baseUrl}/api/v1/locations/saved`);
+    return this.http.get<SavedLocation[]>(`${this.baseUrl}/api/v1/location/saved`);
   }
 
   addSavedLocation(payload: SavedLocation): Observable<SavedLocation> {
-    return this.http.post<SavedLocation>(`${this.baseUrl}/api/v1/locations/saved`, payload);
+    return this.http.post<SavedLocation>(`${this.baseUrl}/api/v1/location/saved`, payload);
   }
 
   deleteSavedLocation(id: number): Observable<any> {
-    return this.http.delete(`${this.baseUrl}/api/v1/locations/saved/${id}`);
+    return this.http.delete(`${this.baseUrl}/api/v1/location/saved/${id}`);
   }
 
   getEmergencyContacts(): Observable<EmergencyContact[]> {
-    return this.http.get<EmergencyContact[]>(`${this.baseUrl}/api/v1/locations/emergency-contacts`);
+    return this.http.get<EmergencyContact[]>(`${this.baseUrl}/api/v1/location/emergency-contacts`);
   }
 
   addEmergencyContact(payload: EmergencyContact): Observable<EmergencyContact> {
-    return this.http.post<EmergencyContact>(`${this.baseUrl}/api/v1/locations/emergency-contacts`, payload);
+    return this.http.post<EmergencyContact>(`${this.baseUrl}/api/v1/location/emergency-contacts`, payload);
   }
 
   deleteEmergencyContact(id: number): Observable<any> {
-    return this.http.delete(`${this.baseUrl}/api/v1/locations/emergency-contacts/${id}`);
+    return this.http.delete(`${this.baseUrl}/api/v1/location/emergency-contacts/${id}`);
   }
 }

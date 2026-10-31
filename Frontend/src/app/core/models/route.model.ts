@@ -1,4 +1,4 @@
-export type RouteType = 'RECOMMENDED_SAFE' | 'FASTER_ALTERNATIVE';
+export type RouteType = 'RECOMMENDED_SAFE' | 'FASTER_ALTERNATIVE' | 'HIGHER_RISK_ALTERNATIVE';
 export type RouteRiskStatus = 'SAFE' | 'CAUTION' | 'UNSAFE';
 
 export interface RouteOption {
@@ -30,6 +30,11 @@ export interface RouteHazard {
 export interface RoutePlanResult {
   source: string;
   destination: string;
+  vehicle_type?: 'car' | 'suv' | 'truck' | 'rescue';
+  road_network_available?: boolean;
+  vehicle_restrictions_available?: boolean;
+  roads_excluded_due_to_vehicle?: { id?: string; name?: string; reason: string }[];
+  speed_assumption_kmh?: number;
   sourceCoords: [number, number];
   destCoords: [number, number];
   recommendedRoute: RouteOption;

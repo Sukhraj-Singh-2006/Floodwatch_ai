@@ -57,8 +57,10 @@ import { PredictionTime } from '../../../core/models/flood-risk.model';
       <!-- Honest Data Badge when looking at future horizons -->
       @if (selected !== 'NOW') {
         <div class="forecast-notice" role="status">
-          <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13">
-            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+            <circle cx="12" cy="12" r="9.5" />
+            <line x1="12" y1="10.5" x2="12" y2="16" />
+            <circle cx="12" cy="7.5" r="0.7" class="info-dot" />
           </svg>
           <span>Horizon {{ selected }}: Forecast awaiting radar extrapolation (live Doppler connection pending)</span>
         </div>
@@ -146,17 +148,37 @@ import { PredictionTime } from '../../../core/models/flood-risk.model';
     .forecast-notice {
       display: inline-flex;
       align-items: center;
-      gap: 0.4rem;
+      gap: 0.45rem;
+      width: fit-content;
+      max-width: 100%;
+      box-sizing: border-box;
       font-size: 0.72rem;
-      color: #fbbf24;
-      background: rgba(245, 158, 11, 0.12);
-      border: 1px solid rgba(245, 158, 11, 0.3);
-      padding: 0.2rem 0.6rem;
-      border-radius: 4px;
+      line-height: 1.35;
+      color: var(--text-main);
+      background: rgba(56, 189, 248, 0.09);
+      border: 1px solid rgba(56, 189, 248, 0.22);
+      padding: 0.3rem 0.55rem;
+      border-radius: var(--radius-sm);
       animation: fadeIn 0.2s ease-in;
 
       svg {
         flex-shrink: 0;
+        fill: none;
+        stroke: #0284c7;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .info-dot {
+        fill: #0284c7;
+        stroke: none;
+      }
+    }
+    @media (max-width: 640px) {
+      .forecast-notice {
+        width: 100%;
+        font-size: 0.68rem;
+        padding: 0.35rem 0.5rem;
       }
     }
     @keyframes fadeIn {

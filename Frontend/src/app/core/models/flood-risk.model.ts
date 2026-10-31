@@ -34,7 +34,7 @@ export interface RoadSegment {
 }
 
 export interface SystemKPIs {
-  currentRainfall: number;
+  currentRainfall: number | null;
   rainfallDelta: string;
   highRiskZones: number;
   highRiskDelta: string;

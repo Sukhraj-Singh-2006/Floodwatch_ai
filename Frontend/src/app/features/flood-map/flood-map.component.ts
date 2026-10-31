@@ -9,6 +9,8 @@ import { FloodZone, PredictionTime } from '../../core/models/flood-risk.model';
 import { TimeSelectorComponent } from '../../shared/components/time-selector/time-selector.component';
 import { RiskBadgeComponent } from '../../shared/components/risk-badge/risk-badge.component';
 import { MapLegendComponent } from '../../shared/components/map-legend/map-legend.component';
+import { RainfallApiService } from '../../core/services/rainfall-api.service';
+import { RainfallLocation, RainfallReading, RainfallStatus } from '../../core/models/rainfall.model';
 
 
 @Component({
@@ -105,6 +107,10 @@ import { MapLegendComponent } from '../../shared/components/map-legend/map-legen
               <span class="dot-layer" [style.background-color]="layers.drainage ? '#10b981' : '#64748b'"></span>
               Drainage
             </button>
+          </div>
+          <div class="rainfall-legend-entry" role="note" aria-label="Rainfall marker legend">
+            <span class="rainfall-legend-marker" aria-hidden="true"></span>
+            <span><strong>Rainfall monitoring point</strong><small>Single-point model estimate · not citywide rainfall</small></span>
           </div>
         </div>
       </div>
@@ -236,6 +242,23 @@ import { MapLegendComponent } from '../../shared/components/map-legend/map-legen
       gap: 0.85rem;
       flex-wrap: wrap;
     }
+    .rainfall-legend-entry {
+      display: inline-flex;
+      align-items: center;
+      gap: .55rem;
+      padding: .45rem .65rem;
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      background: rgba(56, 189, 248, .08);
+      color: var(--text-main);
+      font-size: .72rem;
+    }
+    .rainfall-legend-entry > span:last-child { display: grid; gap: .1rem; }
+    .rainfall-legend-entry small { color: var(--text-muted); font-size: .66rem; }
+    .rainfall-legend-marker {
+      width: 14px; height: 14px; border-radius: 50%; flex: 0 0 14px;
+      background: #38bdf8; border: 2px solid #fff; box-shadow: 0 0 0 2px #075985, 0 0 8px rgba(56,189,248,.75);
+    }
 
     .search-box {
       position: relative;
@@ -334,6 +357,10 @@ import { MapLegendComponent } from '../../shared/components/map-legend/map-legen
       @media (max-width: 640px) {
         display: none;
       }
+    }
+    @media (max-width: 640px) {
+      .rainfall-legend-entry { width: 100%; }
+      .control-actions-row { width: 100%; }
     }
     .floating-notice {
       position: absolute;
@@ -488,15 +515,22 @@ export class FloodMapComponent implements OnInit, AfterViewInit, OnDestroy {
   private roadGroup = L.layerGroup();
   private drainageGroup = L.layerGroup();
   private rainfallGroup = L.layerGroup();
+  private rainfallMarker?: L.CircleMarker;
+  private rainfallLocation: RainfallLocation | null = null;
+  private rainfallReading: RainfallReading | null = null;
+  private rainfallStatus: RainfallStatus | null = null;
+  private rainfallRefreshTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     private floodService: FloodService,
     private route: ActivatedRoute,
-    private router: Router
+    private router: Router,
+    private rainfallApi: RainfallApiService
   ) {}
 
   ngOnInit(): void {
     this.currentHorizon = this.floodService.selectedHorizon();
+    this.loadRainfallPoint();
   }
 
   ngAfterViewInit(): void {
@@ -508,6 +542,7 @@ export class FloodMapComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
+    if (this.rainfallRefreshTimer) clearInterval(this.rainfallRefreshTimer);
     if (this.map) {
       this.map.remove();
     }
@@ -535,6 +570,7 @@ export class FloodMapComponent implements OnInit, AfterViewInit, OnDestroy {
     this.roadGroup.addTo(this.map);
     this.drainageGroup.addTo(this.map);
     this.rainfallGroup.addTo(this.map);
+    this.renderRainfallLayer();
   }
 
   private loadZonesAndLayers(horizon: PredictionTime): void {
@@ -642,26 +678,108 @@ export class FloodMapComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private renderRainfallLayer(): void {
-    this.rainfallGroup.clearLayers();
-    if (!this.layers.rainfall) return;
+    if (!this.layers.rainfall || !this.rainfallLocation) {
+      this.rainfallGroup.clearLayers();
+      this.rainfallMarker = undefined;
+      return;
+    }
+    const { latitude, longitude, name } = this.rainfallLocation;
+    const reading = this.rainfallReading;
+    const amount = this.formatMeasurement(reading?.precipitation_mm, 'mm');
+    const temperature = this.formatMeasurement(reading?.temperature_c, '°C');
+    const humidity = this.formatMeasurement(reading?.humidity_percent, '%');
+    const wind = this.formatMeasurement(reading?.wind_speed_kmh, 'km/h');
+    const freshness = this.currentFreshness(reading);
+    const forecastFreshness = this.forecastFreshness();
+    const fetchedAt = this.formatRainfallTimestamp(reading?.fetched_at ?? this.rainfallStatus?.last_successful_fetch_at);
+    const source = reading?.data_source || 'Unavailable';
+    const content = `<div class="rainfall-popup">
+      <strong>${this.escapePopupText(name)}</strong>
+      <div class="rainfall-popup-label">Single-point model estimate</div>
+      <dl>
+        <dt>Rainfall</dt><dd>${amount}</dd>
+        <dt>Temperature</dt><dd>${temperature}</dd>
+        <dt>Humidity</dt><dd>${humidity}</dd>
+        <dt>Wind speed</dt><dd>${wind}</dd>
+        <dt>Provider timestamp (IST)</dt><dd>${this.escapePopupText(this.formatRainfallTimestamp(reading?.timestamp))}</dd>
+        <dt>Last backend retrieval (IST)</dt><dd>${this.escapePopupText(fetchedAt)}</dd>
+        <dt>Data source</dt><dd>${this.escapePopupText(source)}</dd>
+        <dt>Current reading</dt><dd>${freshness}</dd>
+        <dt>Hourly forecast</dt><dd>${forecastFreshness}</dd>
+      </dl>
+      <small>${latitude.toFixed(5)}, ${longitude.toFixed(5)} · Not a citywide measurement</small>
+    </div>`;
 
-    // Real IMD & GCC Automated Weather Station (AWS) Cells
-    const radarCells = [
-      { center: [12.9941, 80.1807], radius: 3500, color: '#ef4444', label: 'Chennai Airport Meenambakkam AWS (24.5 mm/hr)' },
-      { center: [13.0626, 80.2425], radius: 2800, color: '#f97316', label: 'Nungambakkam Regional Met Center (22.0 mm/hr)' },
-      { center: [13.0117, 80.0575], radius: 4000, color: '#f59e0b', label: 'Chembarambakkam Catchment Station (28.0 mm/hr)' }
-    ];
-
-    radarCells.forEach(c => {
-      const circle = L.circle(c.center as any, {
-        radius: c.radius,
-        fillColor: c.color,
-        fillOpacity: 0.18,
-        stroke: false
+    if (!this.rainfallMarker) {
+      this.rainfallMarker = L.circleMarker([latitude, longitude], {
+        radius: 10, color: '#082f49', weight: 3, fillColor: '#38bdf8', fillOpacity: 1
       });
-      circle.bindTooltip(c.label);
-      this.rainfallGroup.addLayer(circle);
+      this.rainfallMarker.bindPopup(content, { maxWidth: 320, className: 'rainfall-point-popup' });
+      this.rainfallMarker.bindTooltip(`${name} · ${amount}`);
+    } else {
+      this.rainfallMarker.setLatLng([latitude, longitude]);
+      this.rainfallMarker.setPopupContent(content);
+      this.rainfallMarker.setTooltipContent(`${name} · ${amount}`);
+    }
+    if (!this.rainfallGroup.hasLayer(this.rainfallMarker)) this.rainfallGroup.addLayer(this.rainfallMarker);
+  }
+
+  private loadRainfallPoint(): void {
+    this.rainfallApi.locations().subscribe({
+      next: response => {
+        const locations = response.locations ?? [];
+        const preferred = locations.find(item => item.id === 'chennai-reference') ?? locations[0];
+        if (!preferred) return;
+        this.rainfallLocation = preferred;
+        this.refreshRainfallPoint(preferred.id);
+        const refreshSeconds = Number(response.refresh_interval_seconds);
+        if (Number.isFinite(refreshSeconds) && refreshSeconds > 0) {
+          if (this.rainfallRefreshTimer) clearInterval(this.rainfallRefreshTimer);
+          this.rainfallRefreshTimer = setInterval(() => this.refreshRainfallPoint(preferred.id), refreshSeconds * 1000);
+        }
+      }
     });
+  }
+
+  private refreshRainfallPoint(locationId: string): void {
+    this.rainfallApi.current(locationId).subscribe({
+      next: reading => { this.rainfallReading = reading; this.renderRainfallLayer(); },
+      error: () => this.renderRainfallLayer()
+    });
+    this.rainfallApi.status(locationId).subscribe({
+      next: status => { this.rainfallStatus = status; this.renderRainfallLayer(); },
+      error: () => this.renderRainfallLayer()
+    });
+  }
+
+  private currentFreshness(reading: RainfallReading | null): string {
+    if (!reading) return 'Unavailable';
+    if (reading.status === 'stale' || reading.is_stale === true) return 'Stale';
+    if (reading.status === 'cached' || reading.freshness === 'cached') return 'Cached';
+    if (reading.status === 'success') return 'Fresh';
+    return 'Unavailable';
+  }
+
+  private forecastFreshness(): string {
+    if (!this.rainfallStatus) return 'Unavailable';
+    if (this.rainfallStatus.forecast_is_stale === true) return 'Stale';
+    if (this.rainfallStatus.forecast_cache_age_seconds != null) return 'Fresh';
+    return 'Unavailable';
+  }
+
+  private formatMeasurement(value: number | null | undefined, unit: string): string {
+    return typeof value === 'number' && Number.isFinite(value) ? `${value} ${unit}` : 'Unavailable';
+  }
+
+  private escapePopupText(value: string): string {
+    return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char] ?? char);
+  }
+
+  private formatRainfallTimestamp(value?: string | null): string {
+    if (!value) return 'Unavailable';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return `${new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' }).format(date)} IST`;
   }
 
   private checkRouteQueryParams(): void {

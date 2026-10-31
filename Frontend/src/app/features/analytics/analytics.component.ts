@@ -5,6 +5,10 @@ import { RouterLink } from '@angular/router';
 import { AnalyticsService } from '../../core/services/analytics.service';
 import { AnalyticsSummary, AreaRiskRank, RainfallTrendPoint } from '../../core/models/analytics.model';
 import { LoadingStateComponent } from '../../shared/components/loading-state/loading-state.component';
+import { FloodService } from '../../core/services/flood.service';
+import { FloodZone } from '../../core/models/flood-risk.model';
+import { RainfallApiService } from '../../core/services/rainfall-api.service';
+import { RainfallForecast, RainfallLocation, RainfallReading } from '../../core/models/rainfall.model';
 
 @Component({
   selector: 'app-analytics',
@@ -27,12 +31,13 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
         </div>
         <div class="header-summary-chips">
           <div class="chip-item">
-            <span class="c-sub">Peak Telemetric Rainfall</span>
-            <span class="c-val font-mono">Nungambakkam (42 mm/hr)</span>
+            <span class="c-sub">Configured Point Precipitation</span>
+            <span class="c-val font-mono">{{ rainfallReading?.precipitation_mm == null ? 'Unavailable' : (rainfallReading?.precipitation_mm + ' mm') }}</span>
+            <span class="c-sub">{{ rainfallReading?.status || 'Weather status unavailable' }}{{ rainfallReading?.timestamp ? ' · ' + formatForecastTime(rainfallReading?.timestamp || '') + ' IST' : '' }}</span>
           </div>
           <div class="chip-item">
             <span class="c-sub">Vulnerable Population</span>
-            <span class="c-val font-mono">~1,280,000 (Low-Lying GCC Wards)</span>
+            <span class="c-val font-mono">Unavailable · population layer not connected</span>
           </div>
         </div>
       </div>
@@ -48,9 +53,9 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
               <div>
                 <div class="title-with-badge">
                   <h3 class="card-title">Rainfall Intensity Trend (mm/hr)</h3>
-                  <span class="badge-role">Doppler Radar</span>
+                  <span class="badge-role">Open-Meteo Forecast</span>
                 </div>
-                <p class="card-subtitle">Hourly precipitation curve across Greater Chennai (GCC) catchment</p>
+                <p class="card-subtitle">Hourly precipitation at {{ weatherLocation?.name || 'configured monitoring point' }} · point estimate, not citywide coverage</p>
               </div>
             </div>
 
@@ -64,9 +69,9 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
                 <line x1="50" y1="180" x2="670" y2="180" stroke="rgba(255, 255, 255, 0.06)" stroke-width="1" />
 
                 <!-- Y-Axis Labels -->
-                <text x="40" y="34" fill="#64748b" font-size="11" text-anchor="end">45</text>
-                <text x="40" y="84" fill="#64748b" font-size="11" text-anchor="end">30</text>
-                <text x="40" y="134" fill="#64748b" font-size="11" text-anchor="end">15</text>
+                <text x="40" y="34" fill="#64748b" font-size="11" text-anchor="end">{{ rainfallScale }}</text>
+                <text x="40" y="84" fill="#64748b" font-size="11" text-anchor="end">{{ (rainfallScale * 2 / 3) | number:'1.0-1' }}</text>
+                <text x="40" y="134" fill="#64748b" font-size="11" text-anchor="end">{{ (rainfallScale / 3) | number:'1.0-1' }}</text>
                 <text x="40" y="184" fill="#64748b" font-size="11" text-anchor="end">0</text>
 
                 <!-- Gradient Definition -->
@@ -78,14 +83,11 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
                 </defs>
 
                 <!-- Area Fill -->
-                <path
-                  d="M 60 166 L 125 150 L 190 138 L 255 102 L 320 54 L 385 36 L 450 116 L 515 90 L 580 128 L 645 158 L 645 180 L 60 180 Z"
-                  fill="url(#rainGradient)"
-                />
+                <path [attr.d]="rainfallAreaPath" fill="url(#rainGradient)" />
 
                 <!-- Line Path -->
                 <path
-                  d="M 60 166 L 125 150 L 190 138 L 255 102 L 320 54 L 385 36 L 450 116 L 515 90 L 580 128 L 645 158"
+                  [attr.d]="rainfallLinePath"
                   fill="none"
                   stroke="#3b82f6"
                   stroke-width="3"
@@ -104,13 +106,16 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
                 <g transform="translate(385, 20)">
                   <rect x="-42" y="-12" width="84" height="20" rx="4" fill="#ef4444" opacity="0.9" />
                   <text x="0" y="2" fill="#ffffff" font-size="10" font-weight="bold" text-anchor="middle">
-                    PEAK 42 mm/hr
+                    {{ peakRainfall == null ? 'No forecast value' : ('PEAK ' + peakRainfall + ' mm') }}
                   </text>
                 </g>
               </svg>
+              @if (!rainfallPointsWithCoords.length) {
+                <div class="data-unavailable-panel">Hourly precipitation forecast is unavailable. Check backend weather status.</div>
+              }
             </div>
             <div class="chart-footer">
-              <span class="footer-note">Precipitation curve based on convective nowcasting model.</span>
+              <span class="footer-note">{{ forecastStatusText }}</span>
             </div>
           </div>
 
@@ -119,7 +124,7 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
             <div class="card-header">
               <div>
                 <h3 class="card-title">Risk Zone Distribution</h3>
-                <p class="card-subtitle">Grid classification breakdown across 70 mapped sectors</p>
+                <p class="card-subtitle">Historical-model susceptibility across {{ analyticsZones.length }} mapped sectors</p>
               </div>
             </div>
 
@@ -128,10 +133,10 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
               <div class="dist-row">
                 <div class="dist-label-col">
                   <span class="dist-title">Safe / No Risk</span>
-                  <span class="dist-count font-mono">{{ summary.riskDistribution.noRisk }} sectors (20%)</span>
+                  <span class="dist-count font-mono">{{ riskCounts.noRisk }} sectors ({{ riskPercent('noRisk') }}%)</span>
                 </div>
                 <div class="dist-bar-track">
-                  <div class="dist-bar-fill risk-safe" [style.width.%]="20"></div>
+                  <div class="dist-bar-fill risk-safe" [style.width.%]="riskPercent('noRisk')"></div>
                 </div>
               </div>
 
@@ -139,10 +144,10 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
               <div class="dist-row">
                 <div class="dist-label-col">
                   <span class="dist-title">Low Risk</span>
-                  <span class="dist-count font-mono">{{ summary.riskDistribution.low }} sectors (40%)</span>
+                  <span class="dist-count font-mono">{{ riskCounts.low }} sectors ({{ riskPercent('low') }}%)</span>
                 </div>
                 <div class="dist-bar-track">
-                  <div class="dist-bar-fill risk-low" [style.width.%]="40"></div>
+                  <div class="dist-bar-fill risk-low" [style.width.%]="riskPercent('low')"></div>
                 </div>
               </div>
 
@@ -150,10 +155,10 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
               <div class="dist-row">
                 <div class="dist-label-col">
                   <span class="dist-title">Medium / Caution</span>
-                  <span class="dist-count font-mono">{{ summary.riskDistribution.medium }} sectors (23%)</span>
+                  <span class="dist-count font-mono">{{ riskCounts.medium }} sectors ({{ riskPercent('medium') }}%)</span>
                 </div>
                 <div class="dist-bar-track">
-                  <div class="dist-bar-fill risk-medium" [style.width.%]="23"></div>
+                  <div class="dist-bar-fill risk-medium" [style.width.%]="riskPercent('medium')"></div>
                 </div>
               </div>
 
@@ -161,10 +166,10 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
               <div class="dist-row">
                 <div class="dist-label-col">
                   <span class="dist-title">High Flood Risk</span>
-                  <span class="dist-count font-mono text-danger">{{ summary.riskDistribution.high }} sectors (13%)</span>
+                  <span class="dist-count font-mono text-danger">{{ riskCounts.high }} sectors ({{ riskPercent('high') }}%)</span>
                 </div>
                 <div class="dist-bar-track">
-                  <div class="dist-bar-fill risk-high" [style.width.%]="13"></div>
+                  <div class="dist-bar-fill risk-high" [style.width.%]="riskPercent('high')"></div>
                 </div>
               </div>
 
@@ -172,10 +177,10 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
               <div class="dist-row">
                 <div class="dist-label-col">
                   <span class="dist-title">Critical / Impassable</span>
-                  <span class="dist-count font-mono text-danger">{{ summary.riskDistribution.critical }} sectors (4%)</span>
+                  <span class="dist-count font-mono text-danger">{{ riskCounts.critical }} sectors ({{ riskPercent('critical') }}%)</span>
                 </div>
                 <div class="dist-bar-track">
-                  <div class="dist-bar-fill risk-critical" [style.width.%]="4"></div>
+                  <div class="dist-bar-fill risk-critical" [style.width.%]="riskPercent('critical')"></div>
                 </div>
               </div>
             </div>
@@ -183,7 +188,7 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
             <div class="dist-summary-box">
               <span class="d-icon">⚠</span>
               <span class="d-text">
-                <strong>17% of mapped city sectors</strong> currently require heightened emergency dispatch readiness.
+                High / critical model sectors: <strong>{{ riskCounts.high + riskCounts.critical }} of {{ analyticsZones.length }}</strong>. This is a historical susceptibility baseline, not a live emergency dispatch status.
               </span>
             </div>
           </div>
@@ -196,7 +201,7 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
             <div class="card-header">
               <div>
                 <h3 class="card-title">Vulnerability Leaderboard</h3>
-                <p class="card-subtitle">Ranked by AI risk score & precipitation accumulation</p>
+                <p class="card-subtitle">Top cells ranked by the historical spatial susceptibility model</p>
               </div>
               <a routerLink="/location-risk" class="btn btn-secondary btn-sm">
                 Examine All Areas →
@@ -211,16 +216,16 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
                     <th>Locality / Sector</th>
                     <th>Risk Score</th>
                     <th>Trend</th>
-                    <th>Rainfall</th>
+                    <th>Archived daily rainfall</th>
                     <th>Elevation</th>
                   </tr>
                 </thead>
                 <tbody>
-                  @for (area of summary.areaRankings; track area.rank) {
+                  @for (area of rankedZones; track area.gridId) {
                     <tr>
-                      <td class="rank-cell font-mono">#{{ area.rank }}</td>
+                      <td class="rank-cell font-mono">#{{ $index + 1 }}</td>
                       <td class="area-name">
-                        <strong>{{ area.area }}</strong>
+                        <strong>{{ area.name.split(' (')[0] }}</strong>
                       </td>
                       <td>
                         <div class="score-pill font-mono" [ngClass]="getScoreClass(area.riskScore)">
@@ -228,15 +233,16 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
                         </div>
                       </td>
                       <td>
-                        <span class="trend-badge" [ngClass]="getTrendClass(area.trend)">
-                          @if (area.trend === 'INCREASING') { ↑ Increasing }
-                          @else if (area.trend === 'DECREASING') { ↓ Decreasing }
-                          @else { ● Stable }
+                        <span class="trend-badge">
+                          Unavailable
                         </span>
                       </td>
-                      <td class="font-mono">{{ area.rainfall }} mm/hr</td>
+                      <td class="font-mono">{{ area.rainfall }} mm/day</td>
                       <td class="font-mono text-muted">{{ area.elevation }} m</td>
                     </tr>
+                  }
+                  @if (!rankedZones.length) {
+                    <tr><td colspan="6" class="text-muted">Model sector data unavailable.</td></tr>
                   }
                 </tbody>
               </table>
@@ -248,31 +254,13 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
             <div class="card-header">
               <div>
                 <h3 class="card-title">24-Hour Water Depth Profile</h3>
-                <p class="card-subtitle">Average catchment ponding depth & impacted road segments</p>
+              <p class="card-subtitle">Observed depth and road impacts require connected gauges or a validated hydrodynamic solver</p>
               </div>
             </div>
 
-            <div class="inundation-bars-grid">
-              @for (point of summary.inundationHistory; track point.hour) {
-                <div class="inundation-col">
-                  <div class="inundation-bar-wrap">
-                    <div
-                      class="inundation-bar"
-                      [style.height.%]="(point.avgWaterDepthCm / 50) * 100"
-                      [ngClass]="point.avgWaterDepthCm > 30 ? 'bg-danger' : point.avgWaterDepthCm > 15 ? 'bg-warning' : 'bg-safe'"
-                    >
-                      <span class="bar-top-value font-mono">{{ point.avgWaterDepthCm }}cm</span>
-                    </div>
-                  </div>
-                  <span class="inundation-hour font-mono">{{ point.hour }}</span>
-                  <span class="roads-affected font-mono">{{ point.affectedRoadsCount }} rds</span>
-                </div>
-              }
-            </div>
-
-            <div class="inundation-footer">
-              <span class="info-tag">Road Impact:</span>
-              <span class="info-text">Peak blockage reached at +1h with 11 primary underpasses inundated.</span>
+            <div class="data-unavailable-panel">
+              <strong>Measured water-depth history unavailable</strong>
+              <span>No connected depth-gauge feed or active hydrodynamic solver supplies observed depth and road-impact time series.</span>
             </div>
           </div>
         </div>
@@ -890,6 +878,18 @@ import { LoadingStateComponent } from '../../shared/components/loading-state/loa
       color: var(--text-muted);
       line-height: 1.45;
     }
+    .data-unavailable-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+      padding: 1rem;
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      color: var(--text-dim);
+      font-size: 0.82rem;
+      line-height: 1.45;
+      background: rgba(148, 163, 184, 0.08);
+    }
   `]
 })
 export class AnalyticsComponent implements OnInit {
@@ -897,18 +897,20 @@ export class AnalyticsComponent implements OnInit {
   loading = false;
   selectedEventId = 'EVENT_2015_DELUGE';
 
-  readonly rainfallPointsWithCoords = [
-    { time: '08:00', x: 60, y: 166 },
-    { time: '09:00', x: 125, y: 150 },
-    { time: '10:00', x: 190, y: 138 },
-    { time: '11:00', x: 255, y: 102 },
-    { time: '12:00', x: 320, y: 54 },
-    { time: '13:00', x: 385, y: 36 },
-    { time: '14:00 (NOW)', x: 450, y: 116 },
-    { time: '15:00', x: 515, y: 90 },
-    { time: '16:00', x: 580, y: 128 },
-    { time: '17:00', x: 645, y: 158 }
-  ];
+  analyticsZones: FloodZone[] = [];
+  rainfallPointsWithCoords: Array<{ time: string; x: number; y: number; value: number }> = [];
+  rainfallLinePath = '';
+  rainfallAreaPath = '';
+  rainfallScale = 1;
+  peakRainfall: number | null = null;
+  rainfallReading: RainfallReading | null = null;
+  weatherLocation: RainfallLocation | null = null;
+  forecastStatusText = 'Forecast status unavailable';
+  riskCounts = { noRisk: 0, low: 0, medium: 0, high: 0, critical: 0 };
+
+  get rankedZones(): FloodZone[] {
+    return [...this.analyticsZones].sort((a, b) => b.riskScore - a.riskScore).slice(0, 10);
+  }
 
   readonly historicalEvents = [
     {
@@ -956,7 +958,11 @@ export class AnalyticsComponent implements OnInit {
     return this.historicalEvents.find(e => e.id === this.selectedEventId) || this.historicalEvents[0];
   }
 
-  constructor(private analyticsService: AnalyticsService) {}
+  constructor(
+    private analyticsService: AnalyticsService,
+    private floodService: FloodService,
+    private rainfallApi: RainfallApiService
+  ) {}
 
   ngOnInit(): void {
     this.loading = true;
@@ -969,6 +975,71 @@ export class AnalyticsComponent implements OnInit {
         this.loading = false;
       }
     });
+    this.floodService.getFloodZones('NOW').subscribe({
+      next: zones => {
+        this.analyticsZones = zones;
+        this.riskCounts = {
+          noRisk: zones.filter(zone => zone.riskLevel === 'NONE').length,
+          low: zones.filter(zone => zone.riskLevel === 'LOW').length,
+          medium: zones.filter(zone => zone.riskLevel === 'MEDIUM').length,
+          high: zones.filter(zone => zone.riskLevel === 'HIGH').length,
+          critical: zones.filter(zone => zone.riskLevel === 'CRITICAL').length
+        };
+      },
+      error: () => { this.analyticsZones = []; }
+    });
+    this.rainfallApi.locations().subscribe({
+      next: config => {
+        this.weatherLocation = config.locations[0] ?? null;
+        if (!this.weatherLocation) {
+          this.forecastStatusText = 'No monitoring point is configured in the project area.';
+          return;
+        }
+        this.rainfallApi.current(this.weatherLocation.id).subscribe({
+          next: reading => { this.rainfallReading = reading; },
+          error: () => { this.rainfallReading = null; }
+        });
+        this.rainfallApi.hourly(this.weatherLocation.id).subscribe({
+          next: forecast => this.setForecast(forecast),
+          error: () => {
+            this.forecastStatusText = 'Weather API forecast unavailable; no chart values are displayed.';
+            this.setForecast(null);
+          }
+        });
+      },
+      error: () => { this.forecastStatusText = 'Rainfall monitoring configuration is unavailable.'; }
+    });
+  }
+
+  riskPercent(key: keyof typeof this.riskCounts): number {
+    const total = this.analyticsZones.length;
+    return total ? Math.round(this.riskCounts[key] / total * 100) : 0;
+  }
+
+  private setForecast(forecast: RainfallForecast | null): void {
+    const hours = forecast?.hourly?.slice(0, 10) ?? [];
+    const valid = hours.filter(hour => typeof hour.precipitation_mm === 'number' && Number.isFinite(hour.precipitation_mm));
+    this.peakRainfall = valid.length ? Math.max(...valid.map(hour => hour.precipitation_mm!)) : null;
+    this.rainfallScale = Math.max(1, Math.ceil((this.peakRainfall ?? 1) / 5) * 5);
+    this.rainfallPointsWithCoords = valid.map((hour, index) => {
+      const x = valid.length <= 1 ? 350 : 60 + index * (585 / (valid.length - 1));
+      const y = 180 - (hour.precipitation_mm! / this.rainfallScale) * 145;
+      return { time: this.formatForecastTime(hour.timestamp), x, y, value: hour.precipitation_mm! };
+    });
+    this.rainfallLinePath = this.rainfallPointsWithCoords.map((point, index) => `${index ? 'L' : 'M'} ${point.x} ${point.y}`).join(' ');
+    const first = this.rainfallPointsWithCoords[0];
+    const last = this.rainfallPointsWithCoords[this.rainfallPointsWithCoords.length - 1];
+    this.rainfallAreaPath = first && last ? `${this.rainfallLinePath} L ${last.x} 180 L ${first.x} 180 Z` : '';
+    this.forecastStatusText = forecast
+      ? `Open-Meteo hourly forecast · ${forecast.status}${forecast.forecast_is_stale ? ' · forecast cache is stale' : ''}${forecast.fetched_at ? ' · retrieved ' + this.formatForecastTime(forecast.fetched_at) : ''}`
+      : 'Weather API forecast unavailable; no chart values are displayed.';
+  }
+
+  formatForecastTime(value: string): string {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? 'Time unavailable' : new Intl.DateTimeFormat('en-IN', {
+      hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata'
+    }).format(date);
   }
 
   getScoreClass(score: number): string {
