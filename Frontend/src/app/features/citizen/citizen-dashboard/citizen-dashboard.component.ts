@@ -110,7 +110,11 @@ import { FeedbackModalComponent } from '../feedback-modal/feedback-modal.compone
 
           @if (currentRiskScore() !== null) {
             <div class="gauge-center">
-              <app-risk-gauge [score]="currentRiskScore()!"></app-risk-gauge>
+              <app-risk-gauge
+                [score]="currentRiskScore()!"
+                scoreLabel="Historical Model Score"
+                [riskTextOverride]="historicalRiskDescription()"
+              ></app-risk-gauge>
             </div>
             <p class="data-note">Historical-model susceptibility baseline{{ riskFeatureDate() ? ' · rainfall features: ' + riskFeatureDate() : '' }}. This is not a live flood nowcast.</p>
           } @else {
@@ -785,6 +789,15 @@ export class CitizenDashboardComponent implements OnInit, OnDestroy {
     if (status === 'success') return 'Fresh API data';
     if (status === 'cached' || status === 'stale') return 'Cached / stale API data';
     return status === 'unavailable' ? 'API unavailable' : 'Loading API data';
+  }
+
+  historicalRiskDescription(): string {
+    const score = this.currentRiskScore();
+    if (score === null) return 'Unavailable';
+    if (score >= 80) return 'Higher Baseline Susceptibility';
+    if (score >= 50) return 'Moderate Baseline Susceptibility';
+    if (score >= 20) return 'Lower Baseline Susceptibility';
+    return 'Very Low Baseline Susceptibility';
   }
 
   measurement(value: number | null | undefined, unit: string): string {

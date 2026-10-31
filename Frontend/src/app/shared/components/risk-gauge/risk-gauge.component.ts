@@ -34,8 +34,8 @@ import { CommonModule } from '@angular/common';
       </svg>
       <div class="gauge-inner">
         <span class="score-value">{{ score }}%</span>
-        <span class="score-label">Risk Score</span>
-        <span class="score-level" [style.color]="gaugeColor">{{ riskText }}</span>
+        <span class="score-label">{{ scoreLabel }}</span>
+        <span class="score-level" [style.color]="gaugeColor">{{ riskTextOverride || riskText }}</span>
       </div>
     </div>
   `,
@@ -90,6 +90,8 @@ import { CommonModule } from '@angular/common';
 })
 export class RiskGaugeComponent {
   @Input() score = 0;
+  @Input() scoreLabel = 'Risk Score';
+  @Input() riskTextOverride = '';
 
   readonly circumference = 2 * Math.PI * 65;
 

@@ -299,7 +299,7 @@ import { RainfallForecast, RainfallLocation, RainfallReading } from '../../core/
             <div class="metric-box">
               <span class="m-label">Brier Score</span>
               <span class="m-val font-mono text-highlight">0.0569</span>
-              <span class="m-sub">Calibrated probabilities</span>
+              <span class="m-sub">Raw model scores; no post-hoc calibration</span>
             </div>
             <div class="metric-box">
               <span class="m-label">Precision</span>

@@ -50,14 +50,14 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
           <div class="meta-divider"></div>
           <div class="meta-item">
             <span class="meta-label">Sync Status</span>
-            <span class="meta-val status-live">
-              <span class="pulse-dot"></span> Telemetric Stream
+            <span class="meta-val" [class.status-live]="weatherCurrentAvailable && !weatherIsStale">
+              <span class="pulse-dot" *ngIf="weatherCurrentAvailable && !weatherIsStale"></span> {{ weatherStatusLabel }}
             </span>
           </div>
           <div class="meta-divider"></div>
           <div class="meta-item">
             <span class="meta-label">Last Updated</span>
-            <span class="meta-val font-mono">{{ kpis?.lastUpdated || 'Just now' }}</span>
+              <span class="meta-val font-mono">{{ kpis?.lastUpdated || 'Unavailable' }}</span>
           </div>
         </div>
       </div>
@@ -411,7 +411,7 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
                 <input type="checkbox" [checked]="layerDrainage" (change)="layerDrainage = !layerDrainage"> Drainage (SWD)
               </label>
               <label class="layer-chip" [class.active]="layerDno" title="Toggle Chennai Phase 7C DNO Hydrodynamic Water Depth Layer">
-                <input type="checkbox" [checked]="layerDno" (change)="toggleDnoLayer()"> Hydrodynamic Depth (DNO) <span class="layer-status-pill online">Phase 7C</span>
+                <input type="checkbox" [checked]="layerDno" (change)="toggleDnoLayer()" [disabled]="!dnoService.health()?.model_loaded"> Hydrodynamic Depth (DNO) <span class="layer-status-pill">{{ dnoService.health()?.model_loaded ? 'READY' : 'UNAVAILABLE' }}</span>
               </label>
               <label class="layer-chip">
                 <input type="checkbox" [checked]="layerRoutes" (change)="layerRoutes = !layerRoutes"> Safe Corridors
@@ -476,22 +476,25 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
         <div class="dno-card-header">
           <div class="dno-title-group">
             <div class="dno-badge-row">
-              <span class="dno-pill-pulse"><span class="pulse-dot-cyan"></span> EXPERIMENTAL HYDRODYNAMIC MODULE</span>
+              <span class="dno-pill-pulse" [class.dno-disabled-pill]="!dnoService.health()?.model_loaded"><span class="pulse-dot-cyan"></span> {{ dnoService.health()?.model_loaded ? 'EXPERIMENTAL DNO READY' : 'EXPERIMENTAL DNO UNAVAILABLE' }}</span>
               <span class="dno-tag font-mono">CHENNAI PHASE 7C DNO</span>
-              <span class="dno-tag font-mono">ALPHA = 1.00</span>
               <span class="dno-tag font-mono">128 × 128 (78.1m)</span>
-              <span class="dno-tag-device font-mono" [class.device-cuda]="dnoService.health()?.device?.includes('cuda')">
-                ⚡ {{ (dnoService.health()?.device || 'CUDA/CPU') | uppercase }}
+              <span class="dno-tag-device font-mono" [class.device-cuda]="dnoService.health()?.device?.includes('cuda')" [class.dno-device-unavailable]="!dnoService.health()?.model_loaded">
+                {{ dnoService.health()?.model_loaded ? ('⚡ ' + dnoService.health()?.device?.toUpperCase()) : 'MODEL NOT LOADED' }}
               </span>
             </div>
             <h3 class="dno-main-title">Chennai Hydrodynamic Depth & Velocity Forecasting</h3>
-            <p class="dno-sub-text">
+            <p class="dno-sub-text" *ngIf="dnoService.health()?.model_loaded">
               High-resolution Deep Neural Operator (DNO) surrogate simulating physical 2D Navier-Stokes/Saint-Venant
               water depth (H), velocity vectors (U, V), and localized saucer ponding across the Adyar–Velachery pilot basin.
             </p>
+            @if (!dnoService.health()?.model_loaded) {
+              <p class="dno-sub-text">Forecast controls remain disabled until a verified trained checkpoint is installed. No depth or velocity values are generated while the model is unavailable.</p>
+            }
           </div>
 
           <!-- Event Selector & Action -->
+          @if (dnoService.health()?.model_loaded && dnoService.availableEvents()?.events?.length) {
           <div class="dno-event-controls">
             <div class="dno-select-wrap">
               <label class="dno-select-label">Select Chennai Flood Event:</label>
@@ -521,6 +524,9 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
               }
             </button>
           </div>
+          } @else {
+            <div class="dno-event-controls dno-disabled-note">Prepared storm selector and forecast are disabled because no verified DNO checkpoint is loaded.</div>
+          }
         </div>
 
         <!-- Loading State Indicator -->
@@ -536,7 +542,7 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
 
         <!-- Error State -->
         @if (dnoService.errorMessage()) {
-          <div class="dno-error-banner">
+          <div class="dno-error-banner dno-unavailable-banner" role="status">
             <span class="dno-err-icon">⚠️</span>
             <span>{{ dnoService.errorMessage() }}</span>
           </div>
@@ -896,34 +902,34 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
           <div class="status-list">
             <div class="status-row">
               <div class="status-name-group">
-                <span class="status-icon-dot"></span>
-                <span class="service-name">MODEL (XGBoost Baseline)</span>
+                <span class="status-icon-dot" [class.dot-inactive]="!kpis"></span>
+              <span class="service-name">MODEL (XGBoost Historical Baseline)</span>
               </div>
-              <span class="badge status-safe font-mono">ACTIVE</span>
+              <span class="badge" [ngClass]="kpis ? 'status-safe' : 'status-caution'">{{ loadingKpis ? 'CHECKING' : (kpis ? 'AVAILABLE' : 'UNAVAILABLE') }}</span>
             </div>
 
             <div class="status-row">
               <div class="status-name-group">
-                <span class="status-icon-dot"></span>
-                <span class="service-name">DATABASE (3,963 Grid Cells)</span>
+                <span class="status-icon-dot" [class.dot-inactive]="!floodZones.length"></span>
+                <span class="service-name">SPATIAL GRID ({{ floodZones.length || '—' }} CELLS)</span>
               </div>
-              <span class="badge status-safe font-mono">CONNECTED</span>
+              <span class="badge" [ngClass]="floodZones.length ? 'status-safe' : 'status-caution'">{{ floodZones.length ? 'LOADED' : 'UNAVAILABLE' }}</span>
             </div>
 
             <div class="status-row">
               <div class="status-name-group">
-                <span class="status-icon-dot"></span>
+                <span class="status-icon-dot" [class.dot-inactive]="!floodZones.length"></span>
                 <span class="service-name">MAP DATA (GCC 500m Metric Grid)</span>
               </div>
-              <span class="badge status-safe font-mono">AVAILABLE</span>
+              <span class="badge" [ngClass]="floodZones.length ? 'status-safe' : 'status-caution'">{{ floodZones.length ? 'AVAILABLE' : 'UNAVAILABLE' }}</span>
             </div>
 
             <div class="status-row">
               <div class="status-name-group">
-                <span class="status-icon-dot"></span>
-                <span class="service-name">RAINFALL PROVIDER (Telemetry / Radar)</span>
+                <span class="status-icon-dot" [class.dot-inactive]="!weatherCurrentAvailable || weatherIsStale"></span>
+                <span class="service-name">RAINFALL PROVIDER (Open-Meteo)</span>
               </div>
-              <span class="badge status-safe font-mono">CONNECTED</span>
+              <span class="badge" [ngClass]="weatherCurrentAvailable && !weatherIsStale ? 'status-safe' : 'status-caution'">{{ weatherIsStale ? 'STALE CACHE' : (weatherCurrentAvailable ? 'CONNECTED' : 'UNAVAILABLE') }}</span>
             </div>
 
             <div class="status-row">
@@ -946,7 +952,7 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
           <div class="status-card-footer">
             <div class="footer-metric">
               <span class="f-label">Inference Latency:</span>
-              <span class="f-val font-mono">38.5ms</span>
+              <span class="f-val font-mono">Not measured</span>
             </div>
             <div class="footer-metric">
               <span class="f-label">Grid Resolution:</span>
@@ -1437,6 +1443,7 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
       background-color: var(--status-safe);
       box-shadow: 0 0 6px var(--status-safe);
     }
+    .status-icon-dot.dot-inactive { background-color: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.55); }
     .service-name {
       font-size: 0.8125rem;
       font-weight: 500;
@@ -2137,6 +2144,10 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
       border-radius: var(--radius-full);
       padding: 0.2rem 0.65rem;
     }
+    .dno-disabled-pill { color: #64748b; background: #f1f5f9; border-color: #cbd5e1; }
+    .dno-disabled-pill .pulse-dot-cyan { background: #94a3b8; box-shadow: none; animation: none; }
+    .dno-device-unavailable { color: #64748b; background: #f1f5f9; border-color: #cbd5e1; }
+    .dno-disabled-note { max-width: 360px; align-self: center; color: #475569; background: #f1f5f9; border: 1px solid #dbe3ed; border-radius: var(--radius-md); padding: 0.65rem 0.8rem; font-size: 0.78rem; line-height: 1.4; }
     .pulse-dot-cyan {
       width: 6px;
       height: 6px;
@@ -2263,6 +2274,7 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
       align-items: center;
       gap: 0.5rem;
     }
+    .dno-unavailable-banner { color: #475569; background: #f1f5f9; border-color: #dbe3ed; }
     .dno-kpi-strip {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -2516,7 +2528,7 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
   private readonly rainfallApi = inject(RainfallApiService);
   public dnoService: DnoService = inject(DnoService);
 
-  layerDno = true;
+  layerDno = false;
   dnoPlayingTimeline = false;
   private dnoPlayTimer?: any;
   currentDnoForecast: DNOTimestepForecast | null = null;
@@ -3071,19 +3083,16 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
   // ==========================================
 
   private loadDnoHealthAndEvents(): void {
-    this.dnoService.getHealth().subscribe();
-    this.dnoService.getEvents().subscribe({
-      next: (resp) => {
-        if (resp && resp.events && resp.events.length > 0) {
-          const hasStorm11 = resp.events.find(e => e.id === 'storm_011');
-          if (hasStorm11) {
-            this.dnoService.selectedEventId.set('storm_011');
-          } else {
-            this.dnoService.selectedEventId.set(resp.events[0].id);
+    this.dnoService.getHealth().subscribe({
+      next: health => {
+        if (!health.model_loaded) return;
+        this.dnoService.getEvents().subscribe({
+          next: resp => {
+            if (!resp?.events?.length) return;
+            const initialEvent = resp.events.find(event => event.id === 'storm_011') || resp.events[0];
+            this.dnoService.selectedEventId.set(initialEvent.id);
           }
-          // Auto-run forecast for initial visualization
-          this.runDnoForecast();
-        }
+        });
       }
     });
   }
