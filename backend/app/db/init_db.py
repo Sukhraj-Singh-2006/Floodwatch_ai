@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import json
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect, text
 from backend.app.core.config import settings
 from backend.app.core.security import get_password_hash
 from backend.app.db.base import Base
@@ -15,10 +16,18 @@ from backend.app.db.models import (
     EmergencyAlert,
     AlertDelivery
 )
+from backend.app.db.models import WeatherObservation
 
 def init_db(db: Session) -> None:
     # 1. Create all tables
     Base.metadata.create_all(bind=engine)
+    # Lightweight additive migration; existing observations and indexes remain intact.
+    columns = {column["name"] for column in inspect(engine).get_columns("weather_observations")}
+    with engine.begin() as connection:
+        if "provider_timestamp_iso" not in columns:
+            connection.execute(text("ALTER TABLE weather_observations ADD COLUMN provider_timestamp_iso VARCHAR(64)"))
+        if "retrieved_at_iso" not in columns:
+            connection.execute(text("ALTER TABLE weather_observations ADD COLUMN retrieved_at_iso VARCHAR(64)"))
 
     # 2. Seed development accounts if enabled
     if not settings.ENABLE_DEMO_SEED:

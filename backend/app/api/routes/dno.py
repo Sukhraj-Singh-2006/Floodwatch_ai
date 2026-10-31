@@ -35,12 +35,15 @@ def get_dno_health():
     try:
         service = DNOInferenceService.get_instance()
         return service.get_health()
+    except FileNotFoundError as e:
+        logger.warning("DNO health unavailable: %s", e)
+        raise HTTPException(status_code=503, detail="DNO model checkpoint is unavailable.") from e
     except Exception as e:
-        logger.error(f"[DNO Health Error] {str(e)}", exc_info=True)
+        logger.error("[DNO Health Error] %s", e)
         raise HTTPException(
-            status_code=500,
-            detail=f"DNO service health check failed: {str(e)}"
-        )
+            status_code=503,
+            detail="DNO service is unavailable.",
+        ) from e
 
 
 @router.get("/events", response_model=DNOEventsResponse)
@@ -52,12 +55,15 @@ def get_available_events():
     try:
         service = DNOInferenceService.get_instance()
         return service.get_available_events()
+    except FileNotFoundError as e:
+        logger.warning("DNO events unavailable: %s", e)
+        raise HTTPException(status_code=503, detail="DNO model checkpoint is unavailable.") from e
     except Exception as e:
-        logger.error(f"[DNO Events Error] {str(e)}", exc_info=True)
+        logger.error("[DNO Events Error] %s", e)
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to list prepared storm events: {str(e)}"
-        )
+            status_code=503,
+            detail="DNO service is unavailable.",
+        ) from e
 
 
 @router.post("/predict", response_model=DNOPredictResponse)
@@ -79,7 +85,8 @@ def predict_hydrodynamics(payload: DNOPredictRequest):
         )
         return result
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        logger.warning("DNO inference unavailable: %s", e)
+        raise HTTPException(status_code=503, detail="DNO model checkpoint is unavailable.") from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -112,7 +119,8 @@ def get_forecast_geojson(
         )
         return geojson_data
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        logger.warning("DNO forecast unavailable: %s", e)
+        raise HTTPException(status_code=503, detail="DNO model checkpoint is unavailable.") from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

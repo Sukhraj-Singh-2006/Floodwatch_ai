@@ -21,11 +21,20 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
+from backend.app.core.config import settings
+from backend.app.services.vehicle_routing import (
+    normalize_vehicle_type,
+    road_exclusion_reason,
+    route_geometry_distance_km,
+    vehicle_restriction_metadata_available,
+)
+
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 GRID_GEOJSON_PATH = os.path.join(PROJECT_ROOT, "Data", "processed", "grids", "chennai_grid_500m.geojson")
 STATIC_FEATURES_PATH = os.path.join(PROJECT_ROOT, "Data", "processed", "features", "chennai_static_spatial_features.parquet")
 STATIC_FEATURES_CSV_PATH = os.path.join(PROJECT_ROOT, "Data", "processed", "features", "chennai_static_spatial_features.csv")
 MODEL_JSON_PATH = os.path.join(PROJECT_ROOT, "Models", "trained", "chennai_xgboost_baseline.json")
+TRAINING_DATA_PATH = os.path.join(PROJECT_ROOT, "Data", "final", "chennai_flood_training.parquet")
 
 AUDITED_PREDICTORS = [
     "rainfall_daily_mm",
@@ -104,6 +113,7 @@ class FloodService:
         self.model = self._load_xgboost_model()
         self.grid_geometries = self._load_grid_geometries()
         self.static_features_df = self._load_static_features()
+        self.rainfall_baseline_df, self.rainfall_baseline_date = self._load_historical_rainfall_baseline()
         self._validate_features()
 
         # Cached predictions by horizon
@@ -167,6 +177,25 @@ class FloodService:
             f"Static features were not found at {STATIC_FEATURES_PATH} or {STATIC_FEATURES_CSV_PATH}"
         )
 
+    def _load_historical_rainfall_baseline(self):
+        """Use the latest archived daily rainfall feature row, never current hourly weather."""
+        columns = ["grid_id", "date", "rainfall_daily_mm", "rainfall_cum_2d_mm", "rainfall_cum_3d_mm",
+                   "rainfall_cum_7d_mm", "rainfall_delta_mm"]
+        if not os.path.exists(TRAINING_DATA_PATH):
+            raise FileNotFoundError(f"Archived training rainfall features are missing: {TRAINING_DATA_PATH}")
+        try:
+            data = pd.read_parquet(TRAINING_DATA_PATH, columns=columns)
+        except ImportError as exc:
+            # Never replace missing spatial/daily training features with arbitrary values.
+            print(f"[WARN] Archived rainfall features unavailable ({exc}); flood model predictions are disabled until a Parquet engine is installed.")
+            return None, None
+        data["date"] = pd.to_datetime(data["date"])
+        latest = data["date"].max()
+        baseline = data.loc[data["date"] == latest, columns].drop_duplicates("grid_id")
+        if baseline.empty:
+            raise ValueError("No archived rainfall rows available for baseline inference")
+        return baseline.drop(columns="date"), latest.date().isoformat()
+
     def _validate_features(self):
         """Guarantees the model receives exactly its audited 25-feature set."""
         model_features = self.model.feature_names
@@ -176,54 +205,25 @@ class FloodService:
 
     def _run_vectorized_inference(self, horizon: str) -> List[Dict[str, Any]]:
         """
-        Executes vectorized prediction across all 3,963 Chennai cells using audited features.
-        Dynamically integrates real-time Satellite-NWP precipitation and soil moisture fusion.
+        Executes the audited daily-scale model using archived rainfall features.
+        Hourly point forecasts are deliberately not converted to daily/catchment model inputs.
         """
-        from backend.app.services.satellite_nwp_service import SatelliteNwpService
-        sat_data = SatelliteNwpService.get_instance().get_live_precipitation_and_soil()
-        nowcasts = sat_data.get("nowcasts", {})
         h_key = horizon.upper() if horizon else "NOW"
-        nowcast = nowcasts.get(h_key, nowcasts.get("NOW", {}))
-
-        # Real-life meteorological loading
-        live_rate = float(nowcast.get("rate_mm_h", sat_data.get("current_rain_rate_mm_h", 0.0)))
-        lead_acc = float(nowcast.get("accumulated_lead_mm", 0.0))
-        base_daily = float(sat_data.get("accumulated_24h_mm", 45.0))
-        total_daily = max(25.0, base_daily + lead_acc)
-        delta_r = float(sat_data.get("rainfall_delta_mm", 5.0))
-        soil_sat = float(nowcast.get("soil_saturation_pct", sat_data.get("soil_saturation_pct", 85.0))) / 100.0
-
+        if self.rainfall_baseline_df is None:
+            return []
         df = self.static_features_df.copy()
-
-        df["rainfall_daily_mm"] = total_daily
-        df["rainfall_cum_2d_mm"] = total_daily * 1.4
-        df["rainfall_cum_3d_mm"] = total_daily * 1.8
-        df["rainfall_cum_7d_mm"] = total_daily * 2.4
-        df["rainfall_delta_mm"] = delta_r
+        df = df.drop(columns=[c for c in AUDITED_PREDICTORS if c.startswith("rainfall_") and c in df.columns])
+        df = df.merge(self.rainfall_baseline_df, on="grid_id", how="left", validate="one_to_one")
+        rain_cols = [c for c in AUDITED_PREDICTORS if c.startswith("rainfall_")]
+        if df[rain_cols].isna().any().any():
+            raise ValueError("Archived daily rainfall features do not cover every grid cell")
 
         # Run vectorized ML inference with XGBoost model
         X = df[self.model.feature_names]
         dmat = xgb.DMatrix(X)
         raw_ml_probs = self.model.predict(dmat)
 
-        # Hydrodynamic physical surcharge
-        elev = df["elevation_m"].values
-        low_lying = df["low_lying_score"].values
-        built_up = df["built_up_ratio"].values
-        swd_dist = df["dist_to_swd_m"].values
-
-        topo_vuln = (
-            0.40 * low_lying +
-            0.25 * np.clip(1.0 - (elev / 18.0), 0.0, 1.0) +
-            0.20 * built_up +
-            0.15 * np.clip(swd_dist / 400.0, 0.0, 1.0)
-        )
-        surge_pressure = (total_daily - 40.0) + max(0.0, live_rate - 20.0) * 1.5 + (soil_sat * 30.0)
-        k = 0.016
-        hydro_prob = 1.0 / (1.0 + np.exp(-k * (surge_pressure - (1.0 - topo_vuln) * 180.0)))
-        hydro_prob = np.clip(hydro_prob * (0.15 + 0.85 * topo_vuln), 0.002, 0.985)
-
-        probabilities = np.maximum(raw_ml_probs, hydro_prob)
+        probabilities = raw_ml_probs
 
         zones = []
         records = df.to_dict("records")
@@ -277,7 +277,9 @@ class FloodService:
                 "drainageStatus": drain_status,
                 "builtUpDensity": int(round(float(row.get("built_up_ratio", 0.5)) * 100)),
                 "isSimulated": False,
-                "provenanceStatus": "MODEL_PREDICTED" if h_key == "NOW" else "FORECAST"
+                "provenanceStatus": "HISTORICAL_MODEL_BASELINE",
+                "rainfallFeatureDate": self.rainfall_baseline_date,
+                "rainfallFeatureSource": "archived Chennai flood training dataset; not current Open-Meteo data"
             })
 
         return zones
@@ -290,23 +292,11 @@ class FloodService:
 
     def get_forecast_status(self, horizon: str) -> Dict[str, Any]:
         h = horizon.upper() if horizon else "NOW"
-        from backend.app.services.satellite_nwp_service import SatelliteNwpService
-        sat_data = SatelliteNwpService.get_instance().get_live_precipitation_and_soil()
-        nowcast = sat_data.get("nowcasts", {}).get(h)
-        if nowcast:
-            return {
-                "horizon": h,
-                "status": "available",
-                "message": f"Real-time Satellite-NWP multi-sensor nowcast operational for {h}.",
-                "rate_mm_h": nowcast.get("rate_mm_h", 0.0),
-                "soil_saturation_pct": nowcast.get("soil_saturation_pct", 85.0),
-                "source": "Satellite-NWP Multi-Sensor Fusion Grid",
-                "timestamp": sat_data["timestamp"]
-            }
         return {
             "horizon": h,
             "status": "forecast_data_unavailable",
-            "message": f"Precipitation nowcasting for {h} outside active 0-3h window.",
+            "message": "The flood susceptibility model requires daily, spatial rainfall inputs. Open-Meteo hourly point estimates are not compatible and are not fed into it.",
+            "rainfall_feature_date": self.rainfall_baseline_date,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
@@ -364,14 +354,16 @@ class FloodService:
         zones = self.get_flood_zones("NOW")
         high_risk_count = sum(1 for z in zones if z["riskScore"] >= 50)
         critical_count = sum(1 for z in zones if z["riskScore"] >= 84)
-        avg_rainfall = 45.0
+        from backend.app.services.satellite_nwp_service import SatelliteNwpService
+        weather = SatelliteNwpService.get_instance().get_live_precipitation_and_soil()
+        avg_rainfall = weather.get("current", {}).get("precipitation_mm")
 
         roads = self.get_road_segments()
         unsafe_roads_count = sum(1 for r in roads if r["status"] in ["UNSAFE", "BLOCKED"])
 
         return {
             "currentRainfall": avg_rainfall,
-            "rainfallDelta": "Northeast Monsoon active loading",
+            "rainfallDelta": ("Open-Meteo model estimate · preceding hour" if avg_rainfall is not None else "Live rainfall unavailable"),
             "highRiskZones": high_risk_count,
             "highRiskDelta": f"{critical_count} sectors exceed audited 0.84 critical threshold",
             "unsafeRoads": unsafe_roads_count,
@@ -502,12 +494,16 @@ class FloodService:
 
     def calculate_safe_route(self, source: str, destination: str, vehicle_type: str = "car") -> Dict[str, Any]:
         """
-        Calculates safe mobility path avoiding high flood-susceptibility sectors.
-        Clearly distinguishes RISK-BASED AVOIDANCE from confirmed physical closures.
+        Return the existing candidate route geometries with geometry-derived distances.
+
+        The checked-in Chennai road layer currently has no connected road graph or
+        vehicle access/speed attributes. Route geometries are therefore clearly
+        marked as planning approximations; no vehicle access or flood-depth
+        tolerance is inferred from missing data.
         """
         s_clean = (source or "Chennai Central").strip()
         d_clean = (destination or "Chennai Airport").strip()
-        v_type = (vehicle_type or "car").lower()
+        v_type = normalize_vehicle_type(vehicle_type)
 
         # Check if destination is an emergency facility
         from backend.app.api.routes.emergency import _load_emergency_facilities
@@ -545,43 +541,80 @@ class FloodService:
             notes = "Continuous transit along Anna Salai & Kathipara Grade Separator (minimal flood susceptibility)."
 
 
-        vehicle_modifier = 1.0
-        if v_type in ["suv", "truck", "rescue"]:
-            vehicle_modifier = 0.85 # Higher clearance allows better passage
+        # Distances are measured from the returned polylines, never copied from
+        # scenario constants. These are geodesic polyline lengths; actual road
+        # edge lengths require the absent connected Chennai road graph.
+        recommended_distance_km = round(route_geometry_distance_km(rec_coords), 2)
+        alternative_distance_km = round(route_geometry_distance_km(alt_coords), 2)
+
+        planning_speeds = {
+            "car": settings.SAFE_ROUTE_SPEED_CAR_KMH,
+            "suv": settings.SAFE_ROUTE_SPEED_SUV_KMH,
+            "truck": settings.SAFE_ROUTE_SPEED_TRUCK_KMH,
+            "rescue": settings.SAFE_ROUTE_SPEED_RESCUE_KMH,
+        }
+        planning_speed_kmh = planning_speeds[v_type]
+        def estimate_minutes(distance_km: float) -> int:
+            return max(1, int(math.ceil(distance_km / planning_speed_kmh * 60)))
+
+        road_data = self.get_road_segments()
+        road_network_available = any(
+            isinstance(road.get("from"), str)
+            and isinstance(road.get("to"), str)
+            and isinstance(road.get("length_km"), (int, float))
+            for road in road_data
+        )
+        restrictions_available = road_network_available and vehicle_restriction_metadata_available(road_data)
+        roads_excluded = [
+            {"id": road.get("id"), "name": road.get("name"), "reason": reason}
+            for road in road_data
+            if road_network_available and (reason := road_exclusion_reason(
+                road, v_type, settings.SAFE_ROUTE_VEHICLE_DIMENSIONS.get(v_type, {})
+            )) is not None
+        ]
+        limitation_note = (
+            "Vehicle access restrictions are applied only when explicitly tagged in road data. "
+            "The current Chennai road layer has no vehicle restriction tags or connected road graph. "
+            "Path geometry is a planning approximation; distance is measured along its polyline."
+        )
 
         return {
             "source": s_clean,
             "destination": d_clean,
             "vehicle_type": v_type,
+            "road_network_available": road_network_available,
+            "vehicle_restrictions_available": restrictions_available,
+            "roads_excluded_due_to_vehicle": roads_excluded,
+            "speed_assumption_kmh": planning_speed_kmh,
             "sourceCoords": src_coords,
             "destCoords": dst_coords,
             "recommendedRoute": {
                 "id": "REC-CHN-ELEVATED",
-                "name": "Anna Salai / Kathipara Elevated Corridor (Recommended)",
+                "name": f"Recommended route · {s_clean} to {d_clean}",
                 "type": "RECOMMENDED_SAFE",
-                "distanceKm": 16.2,
-                "etaMinutes": int(round(28 * vehicle_modifier)),
+                "distanceKm": recommended_distance_km,
+                "etaMinutes": estimate_minutes(recommended_distance_km),
                 "safetyScore": 95,
                 "riskStatus": "SAFE",
                 "floodPointsAvoided": 4,
                 "hazardExposure": "Low (Elevated Grade Separators)",
                 "pathCoordinates": rec_coords,
-                "notes": notes,
-                "isSimulated": False
+                "notes": f"{notes} {limitation_note} ETA uses the configured {planning_speed_kmh:g} km/h {v_type} planning speed.",
+                "isSimulated": True
             },
             "alternativeRoute": {
                 "id": "ALT-CHN-SURFACE",
-                "name": "Direct Surface Street Link",
-                "type": "FASTER_ALTERNATIVE",
-                "distanceKm": 14.1,
-                "etaMinutes": int(round(48 * vehicle_modifier)),
+                "name": f"Alternative route · {s_clean} to {d_clean}",
+                "type": "HIGHER_RISK_ALTERNATIVE",
+                "distanceKm": alternative_distance_km,
+                "etaMinutes": estimate_minutes(alternative_distance_km),
                 "safetyScore": 42,
                 "riskStatus": "UNSAFE",
                 "floodPointsAvoided": 0,
                 "hazardExposure": "High (Susceptible Lowland Depressions)",
                 "pathCoordinates": alt_coords,
-                "notes": "Path crosses multiple low-lying saucer depressions with high flood susceptibility index.",
-                "isSimulated": False
+                "notes": f"Path crosses a higher-susceptibility corridor. {limitation_note} ETA uses the configured {planning_speed_kmh:g} km/h {v_type} planning speed.",
+                "isSimulated": True
             },
             "hazards": [
                 {
@@ -595,46 +628,38 @@ class FloodService:
                     "isSimulated": False
                 }
             ],
-            "isSimulated": False
+            "isSimulated": True
         }
 
     def get_analytics_summary(self) -> Dict[str, Any]:
         zones = self.get_flood_zones("NOW")
+        none = sum(1 for z in zones if z["riskLevel"] == "NONE")
         low = sum(1 for z in zones if z["riskLevel"] == "LOW")
         med = sum(1 for z in zones if z["riskLevel"] == "MEDIUM")
         high = sum(1 for z in zones if z["riskLevel"] == "HIGH")
         crit = sum(1 for z in zones if z["riskLevel"] == "CRITICAL")
-
+        ranked = sorted(zones, key=lambda z: z["riskScore"], reverse=True)
         rank_areas = [
-            {"rank": 1, "area": "Velachery Basin", "riskScore": 92, "trend": "STABLE", "rainfall": 45.0, "elevation": 4.5},
-            {"rank": 2, "area": "Madipakkam Lowlands", "riskScore": 86, "trend": "INCREASING", "rainfall": 45.0, "elevation": 5.2},
-            {"rank": 3, "area": "Vyasarpadi Underpass", "riskScore": 82, "trend": "STABLE", "rainfall": 45.0, "elevation": 3.8},
-            {"rank": 4, "area": "Adyar Basin / Saidapet", "riskScore": 78, "trend": "DECREASING", "rainfall": 45.0, "elevation": 6.0},
-            {"rank": 5, "area": "Kolathur North Basin", "riskScore": 72, "trend": "STABLE", "rainfall": 45.0, "elevation": 7.4}
+            {"rank": rank, "area": z["name"], "riskScore": z["riskScore"], "trend": "UNAVAILABLE",
+             "rainfall": z["rainfall"], "elevation": z["elevation"]}
+            for rank, z in enumerate(ranked[:10], start=1)
         ]
 
         return {
-            "rainfallTrends": [
-                {"time": "06:00 AM", "rainfallMm": 12.0, "cumulativeMm": 12.0, "isSimulated": False},
-                {"time": "09:00 AM", "rainfallMm": 22.5, "cumulativeMm": 34.5, "isSimulated": False},
-                {"time": "12:00 PM", "rainfallMm": 38.0, "cumulativeMm": 72.5, "isSimulated": False},
-                {"time": "03:00 PM", "rainfallMm": 45.0, "cumulativeMm": 117.5, "isSimulated": False}
-            ],
+            # Hourly weather forecast belongs to the rainfall API. This endpoint
+            # does not invent historical observations or convert forecasts to history.
+            "rainfallTrends": [],
             "riskDistribution": {
-                "noRisk": 0,
+                "noRisk": none,
                 "low": low,
                 "medium": med,
                 "high": high,
                 "critical": crit
             },
             "areaRankings": rank_areas,
-            "inundationHistory": [
-                {"hour": "-6h", "avgWaterDepthCm": None, "affectedRoadsCount": 1},
-                {"hour": "-3h", "avgWaterDepthCm": None, "affectedRoadsCount": 2},
-                {"hour": "NOW", "avgWaterDepthCm": None, "affectedRoadsCount": 3}
-            ],
-            "peakRainfallLocality": "Chembarambakkam AWS (28.0 mm/hr)",
-            "totalVulnerablePopulation": "1,850,000 across Greater Chennai Catchment",
+            "inundationHistory": [],
+            "peakRainfallLocality": "Unavailable — no citywide rain-gauge aggregation is connected",
+            "totalVulnerablePopulation": "Unavailable — no population exposure layer is connected",
             "isSimulated": False
         }
 
@@ -906,78 +931,29 @@ class FloodService:
         rainfall_rate_mm_h: Optional[float] = None,
         accumulated_rainfall_mm: Optional[float] = None
     ) -> Dict[str, Any]:
-        """
-        Calculates flood susceptibility and physical time-to-inundation (ETA)
-        for key Greater Chennai vulnerable zones considering rainfall intensity
-        against drainage evacuation capacity.
-        Dynamically uses live Satellite-NWP telemetry when parameters are omitted.
+        """Return an explicit unavailable result until calibrated solver inputs exist.
+
+        Open-Meteo point precipitation is not a basin rainfall rate, historical
+        antecedent accumulation, or a measurement of available drainage storage.
+        The project currently has no connected calibrated hydrodynamic solver.
         """
         from backend.app.services.satellite_nwp_service import SatelliteNwpService
         sat_data = SatelliteNwpService.get_instance().get_live_precipitation_and_soil()
-
-        if rainfall_rate_mm_h is None or rainfall_rate_mm_h <= 0.0:
-            rainfall_rate_mm_h = max(24.5, float(sat_data.get("current_rain_rate_mm_h", 24.5)))
-        if accumulated_rainfall_mm is None or accumulated_rainfall_mm <= 0.0:
-            accumulated_rainfall_mm = max(45.0, float(sat_data.get("accumulated_24h_mm", 68.4)))
-
-        key_localities = [
-            {"name": "Velachery South Basin", "lat": 12.9815, "lon": 80.2180, "elevation_m": 4.8, "storage_mm": 18.0, "evac_rate_mm_h": 14.0},
-            {"name": "Madipakkam Puzhuthivakkam", "lat": 12.9640, "lon": 80.1980, "elevation_m": 5.2, "storage_mm": 20.0, "evac_rate_mm_h": 12.0},
-            {"name": "Adyar Kotturpuram Corridor", "lat": 13.0080, "lon": 80.2450, "elevation_m": 3.9, "storage_mm": 15.0, "evac_rate_mm_h": 16.0},
-            {"name": "T. Nagar Panagal Park", "lat": 13.0418, "lon": 80.2341, "elevation_m": 8.5, "storage_mm": 28.0, "evac_rate_mm_h": 22.0},
-            {"name": "Perumbakkam Lowlands", "lat": 12.8950, "lon": 80.1920, "elevation_m": 4.2, "storage_mm": 16.0, "evac_rate_mm_h": 10.0},
-            {"name": "Kolathur North Basin", "lat": 13.1238, "lon": 80.2185, "elevation_m": 6.1, "storage_mm": 22.0, "evac_rate_mm_h": 15.0},
-            {"name": "Mudichur / Tambaram West", "lat": 12.9150, "lon": 80.0850, "elevation_m": 5.0, "storage_mm": 17.0, "evac_rate_mm_h": 11.0},
-            {"name": "Vyasarpadi Underpass", "lat": 13.1185, "lon": 80.2615, "elevation_m": 3.5, "storage_mm": 12.0, "evac_rate_mm_h": 9.0}
-        ]
-
-        results = []
-        for loc in key_localities:
-            # Saturated infiltration rate for Chennai clay soil ~ 2.5 mm/h
-            infiltration = 2.5
-            effective_evac = loc["evac_rate_mm_h"] + infiltration
-            net_filling_rate = rainfall_rate_mm_h - effective_evac
-
-            storage = loc["storage_mm"]
-            # Remaining depression storage
-            remaining_storage = max(0.0, storage - (accumulated_rainfall_mm * 0.4))
-
-            if net_filling_rate <= 0:
-                status = "SAFE"
-                eta_mins = None
-                eta_display = "Safe / Infiltration Dominant"
-                flood_occurring = False
-            else:
-                flood_occurring = True
-                if remaining_storage <= 0.5:
-                    status = "ACTIVE_OVERTOPPING"
-                    eta_mins = 0
-                    eta_display = "Active Inundation (0 mins)"
-                else:
-                    mins = max(5, int((remaining_storage / net_filling_rate) * 60))
-                    eta_mins = mins
-                    status = "IMMINENT_SURCHARGE" if mins <= 30 else "WATCH"
-                    eta_display = f"ETA: {mins} mins"
-
-            results.append({
-                "locality": loc["name"],
-                "latitude": loc["lat"],
-                "longitude": loc["lon"],
-                "elevation_m": loc["elevation_m"],
-                "flood_occurring": flood_occurring,
-                "status": status,
-                "eta_minutes": eta_mins,
-                "eta_display": eta_display,
-                "net_filling_rate_mm_h": round(net_filling_rate, 1),
-                "drainage_evacuation_mm_h": loc["evac_rate_mm_h"]
-            })
-
+        current = sat_data.get("current", {})
         return {
-            "rainfall_rate_mm_h": rainfall_rate_mm_h,
-            "accumulated_rainfall_mm": accumulated_rainfall_mm,
-            "monitored_localities_count": len(results),
-            "flooding_localities_count": sum(1 for r in results if r["flood_occurring"]),
-            "predictions": results,
+            "status": "unavailable",
+            "message": "Physical inundation ETA is unavailable: no calibrated hydrodynamic solver, basin storage measurements, or catchment-wide antecedent rainfall feed is connected.",
+            "weather_reference": {
+                "location": sat_data.get("location"),
+                "latitude": sat_data.get("latitude"),
+                "longitude": sat_data.get("longitude"),
+                "precipitation_mm": current.get("precipitation_mm"),
+                "timestamp": current.get("timestamp"),
+                "fetched_at": sat_data.get("last_successful_fetch_at"),
+                "status": sat_data.get("status"),
+                "data_source": sat_data.get("data_source")
+            },
+            "predictions": [],
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 

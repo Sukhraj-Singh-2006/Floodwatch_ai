@@ -65,12 +65,12 @@ def get_location_risk(location: str = Query(..., description="Location name or l
 @router.get("/flood/predict-eta")
 @router.post("/flood/predict-eta")
 def predict_flood_eta(
-    rainfall_rate_mm_h: float = Query(default=40.0, description="Current precipitation intensity in mm/hr"),
-    accumulated_rainfall_mm: float = Query(default=65.0, description="Past accumulated rainfall in mm")
+    rainfall_rate_mm_h: Optional[float] = Query(default=None, description="Optional rainfall input; an Open-Meteo point estimate is not a basin rain rate"),
+    accumulated_rainfall_mm: Optional[float] = Query(default=None, description="Optional antecedent rainfall; no compatible catchment feed is connected")
 ):
     """
-    Computes real-time flood onset ETA for low-lying vulnerable Greater Chennai zones
-    based on live rainfall loading vs. storm water drain evacuation capacity.
+    Reports physical ETA availability. This endpoint does not fabricate depth or ETA
+    until a calibrated solver and required basin-scale inputs are connected.
     """
     service = FloodService.get_instance()
     return service.predict_inundation_eta(

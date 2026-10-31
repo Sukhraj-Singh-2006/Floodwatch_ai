@@ -36,3 +36,14 @@ class SavedLocationResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class EmergencyContactCreate(BaseModel):
+    contact_name: str = Field(..., min_length=2, max_length=120)
+    relationship: str = Field(default="Family", min_length=2, max_length=40)
+    mobile_number: str = Field(..., min_length=7, max_length=32)
+    notify_on_critical_alert: bool = False
+
+
+class EmergencyContactResponse(EmergencyContactCreate):
+    id: int

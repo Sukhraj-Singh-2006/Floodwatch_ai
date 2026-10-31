@@ -24,7 +24,7 @@ class FloodZoneSchema(BaseModel):
     provenanceStatus: Optional[str] = "MODEL_PREDICTED"
 
 class SystemKPIsSchema(BaseModel):
-    currentRainfall: float
+    currentRainfall: Optional[float] = None
     rainfallDelta: str
     highRiskZones: int
     highRiskDelta: str

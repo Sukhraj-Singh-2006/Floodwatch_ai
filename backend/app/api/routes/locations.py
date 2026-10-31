@@ -4,11 +4,14 @@ from sqlalchemy.orm import Session
 
 from backend.app.db.session import get_db
 from backend.app.db.models.user import User
+from backend.app.db.models.emergency_contact import EmergencyContact
 from backend.app.schemas.location import (
     LocationUpdateRequest,
     LocationResponse,
     SavedLocationCreate,
-    SavedLocationResponse
+    SavedLocationResponse,
+    EmergencyContactCreate,
+    EmergencyContactResponse,
 )
 from backend.app.services.auth_service import get_current_user
 from backend.app.services.location_service import LocationService
@@ -102,3 +105,65 @@ def delete_saved_location(
     if not success:
         raise HTTPException(status_code=404, detail="Saved location not found.")
     return {"success": True, "message": "Saved location deleted."}
+
+
+@router.get("/emergency-contacts", response_model=List[EmergencyContactResponse])
+def get_emergency_contacts(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    contacts = db.query(EmergencyContact).filter(
+        EmergencyContact.user_id == current_user.id
+    ).order_by(EmergencyContact.id.asc()).all()
+    return [
+        EmergencyContactResponse(
+            id=contact.id,
+            contact_name=contact.full_name,
+            relationship=contact.relationship_type,
+            mobile_number=contact.mobile,
+            notify_on_critical_alert=contact.notification_consent,
+        )
+        for contact in contacts
+    ]
+
+
+@router.post("/emergency-contacts", response_model=EmergencyContactResponse)
+def create_emergency_contact(
+    payload: EmergencyContactCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    contact = EmergencyContact(
+        user_id=current_user.id,
+        full_name=payload.contact_name.strip(),
+        relationship_type=payload.relationship.strip(),
+        mobile=payload.mobile_number.strip(),
+        notification_consent=payload.notify_on_critical_alert,
+    )
+    db.add(contact)
+    db.commit()
+    db.refresh(contact)
+    return EmergencyContactResponse(
+        id=contact.id,
+        contact_name=contact.full_name,
+        relationship=contact.relationship_type,
+        mobile_number=contact.mobile,
+        notify_on_critical_alert=contact.notification_consent,
+    )
+
+
+@router.delete("/emergency-contacts/{contact_id}")
+def delete_emergency_contact(
+    contact_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    contact = db.query(EmergencyContact).filter(
+        EmergencyContact.id == contact_id,
+        EmergencyContact.user_id == current_user.id,
+    ).first()
+    if contact is None:
+        raise HTTPException(status_code=404, detail="Emergency contact not found.")
+    db.delete(contact)
+    db.commit()
+    return {"success": True, "message": "Emergency contact deleted."}

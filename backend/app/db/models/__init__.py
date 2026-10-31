@@ -10,6 +10,7 @@ from backend.app.db.models.emergency_alert import EmergencyAlert
 from backend.app.db.models.alert_delivery import AlertDelivery
 from backend.app.db.models.citizen_flood_report import CitizenFloodReport
 from backend.app.db.models.audit_log import AuditLog
+from backend.app.db.models.weather_observation import WeatherObservation
 
 __all__ = [
     "Base",
@@ -23,5 +24,6 @@ __all__ = [
     "EmergencyAlert",
     "AlertDelivery",
     "CitizenFloodReport",
-    "AuditLog"
+    "AuditLog",
+    "WeatherObservation"
 ]
