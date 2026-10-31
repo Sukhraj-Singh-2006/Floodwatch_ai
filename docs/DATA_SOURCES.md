@@ -70,10 +70,10 @@
   10. Vidyavihar Subway
 - **Use**: Generates ground-truth binary labels ($1 = \text{waterlogging event}$, $0 = \text{normal}$) for time-aware supervised learning.
 
-### F. Road Network Graph (`DS-06`)
-- **Source**: OpenStreetMap Highway Network (Geofabrik extract).
-- **Coverage**: Expressways (WEH, EEH), Arterial roads (SV Road, LBS Marg, SCLR, JVLR), and Subways.
-- **Routing Integration**: NetworkX directed multigraph with dynamic edge weights penalizing flooded road segments.
+### F. Road Network (`DS-06`)
+- The current repository does **not** contain a connected Chennai road-edge graph or a Geofabrik road extract. It contains a small set of simplified route overlay polylines in `FloodService.get_road_segments()` and fixed safe-route candidate geometries.
+- Those records have no per-vehicle access restrictions, road speed limits, or truck height/weight/width attributes. The Safe Route API therefore reports planning geometry and configured planning-speed ETAs; it does not claim street-level network routing.
+- The reusable vehicle edge filter can apply explicit access tags once a connected road graph with those attributes is provided. Missing attributes never grant SUV flood tolerance or emergency access.
 
 ### G. Urban Built-up & Impervious Cover (`DS-07`)
 - **Source**: ESA WorldCover 10m & Copernicus Global Land Cover.
