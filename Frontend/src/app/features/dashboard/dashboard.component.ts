@@ -50,14 +50,14 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
           <div class="meta-divider"></div>
           <div class="meta-item">
             <span class="meta-label">Sync Status</span>
-            <span class="meta-val" [class.status-live]="weatherCurrentAvailable && !weatherIsStale">
-              <span class="pulse-dot" *ngIf="weatherCurrentAvailable && !weatherIsStale"></span> {{ weatherStatusLabel }}
+            <span class="meta-val" [class.status-live]="weatherStatusCode === 'success' && !weatherIsStale">
+              <span class="pulse-dot" *ngIf="weatherStatusCode === 'success' && !weatherIsStale"></span> {{ weatherStatusLabel }}
             </span>
           </div>
           <div class="meta-divider"></div>
           <div class="meta-item">
-            <span class="meta-label">Last Updated</span>
-              <span class="meta-val font-mono">{{ kpis?.lastUpdated || 'Unavailable' }}</span>
+            <span class="meta-label">Last Successful Retrieval</span>
+            <span class="meta-val font-mono">{{ weatherLastSuccessAt || 'Unavailable' }}</span>
           </div>
         </div>
       </div>
@@ -272,7 +272,7 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
         <div class="card-header weather-header">
           <div class="weather-title-group">
             <div class="weather-badge-row">
-              <span class="badge-live-pulse"><span class="pulse-dot"></span> {{ weatherStatusLabel }}</span>
+              <span class="badge-live-pulse" [class.cached-weather-status]="weatherStatusCode !== 'success' || weatherIsStale"><span class="pulse-dot" *ngIf="weatherStatusCode === 'success' && !weatherIsStale"></span> {{ weatherStatusLabel }}</span>
               <span class="badge-radar font-mono">OPEN-METEO</span>
               <span class="badge-source font-mono">{{ weatherDataTypeLabel }}</span>
             </div>
@@ -283,13 +283,13 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
           </div>
           <div class="weather-actions">
             <label class="sr-only" for="rain-location">Monitoring location</label>
-            <select id="rain-location" class="form-select" [value]="selectedWeatherLocation" (change)="selectWeatherLocation($event)">
+            <select id="rain-location" class="form-select" [value]="selectedWeatherLocation" (change)="selectWeatherLocation($event)" [disabled]="weatherManualRefreshing">
               @for (loc of weatherLocations; track loc.id) {
                 <option [value]="loc.id">{{ loc.name }}</option>
               }
             </select>
-            <button type="button" class="btn btn-secondary btn-sm" (click)="refreshWeather()">
-              ↻ Refresh Weather
+            <button type="button" class="btn btn-secondary btn-sm" (click)="refreshWeather()" [disabled]="weatherManualRefreshing || !selectedWeatherLocation">
+              {{ weatherManualRefreshing ? 'Refreshing Open-Meteo…' : '↻ Refresh Weather' }}
             </button>
           </div>
         </div>
@@ -370,6 +370,47 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
           } @else {
             <p class="weather-empty">{{ weatherStatusLabel }}. No validated hourly forecast is available.</p>
           }
+          <section class="rainfall-area-risk" aria-live="polite">
+            <div class="rainfall-area-risk-header">
+              <div>
+                <h4>24-hour rainfall scenario by area</h4>
+                <p>Forecast rain is paired with existing spatial susceptibility context.</p>
+              </div>
+              @if (next24HourRainfallMm !== null) {
+                <div class="rain-total"><strong>{{ next24HourRainfallMm | number:'1.0-1' }} <small>mm</small></strong><span>next 24 hours · point estimate</span></div>
+              }
+            </div>
+            @if (next24HourRainfallMm === null) {
+              <div class="rainfall-area-risk-empty">A complete, valid 24-hour forecast is not available. Area rankings will appear when all 24 hourly precipitation values are available.</div>
+            } @else if (next24HourRainfallMm === 0) {
+              <div class="rainfall-area-risk-empty">The selected Chennai point has 0 mm forecast accumulation for the next 24 hours. A rainfall-triggered scenario is not indicated by this forecast.</div>
+            } @else if (!areaSusceptibilityRanking.length) {
+              <div class="rainfall-area-risk-empty">The rainfall forecast is available, but the Chennai spatial susceptibility baseline has not loaded.</div>
+            } @else if (!areaScoresSeparate) {
+              <div class="area-risk-tie"><strong>Area scores are effectively tied</strong><span>The historical model does not distinguish higher and lower susceptibility areas at this precision. No area-specific forecast ranking is shown.</span></div>
+              <div class="area-risk-tied-list">
+                @for (area of areaSusceptibilityRanking.slice(0, 6); track area.name) {
+                  <div class="area-risk-row"><span>{{ area.name }}</span><strong>{{ area.score | number:'1.2-2' }} / 100</strong></div>
+                }
+              </div>
+            } @else {
+              <div class="area-risk-columns">
+                <div>
+                  <h5><span class="risk-rank-dot higher"></span> Higher baseline susceptibility</h5>
+                  @for (area of areaSusceptibilityRanking.slice(0, 5); track area.name) {
+                    <div class="area-risk-row"><span>{{ area.name }}</span><strong>{{ area.score | number:'1.2-2' }} / 100</strong></div>
+                  }
+                </div>
+                <div>
+                  <h5><span class="risk-rank-dot lower"></span> Lower baseline susceptibility</h5>
+                  @for (area of areaSusceptibilityRanking.slice(-5).reverse(); track area.name) {
+                    <div class="area-risk-row"><span>{{ area.name }}</span><strong>{{ area.score | number:'1.2-2' }} / 100</strong></div>
+                  }
+                </div>
+              </div>
+            }
+            <div class="area-risk-footnote"><span class="forecast-source-pill" [class.cached]="weatherForecastIsStale || weatherHourlyStatus === 'cached'">{{ weatherForecastIsStale || weatherHourlyStatus === 'cached' ? 'CACHED FORECAST' : 'OPEN-METEO FORECAST' }}</span><span>Single-point rain estimate · baseline scores are uncalibrated model outputs, not flood probabilities or water-depth forecasts.</span></div>
+          </section>
         </div>
       </div>
 
@@ -1670,6 +1711,30 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
     .weather-diagnostics { display: flex; flex-wrap: wrap; gap: 0.45rem 1rem; padding: 0.75rem 0; color: var(--text-dim); font-size: 0.72rem; }
     .weather-diagnostics strong { color: var(--text-main); font-weight: 600; }
     .weather-empty { color: var(--text-dim); }
+    .rainfall-area-risk { margin-top: 1rem; padding: 1.15rem; border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); background: var(--bg-card); }
+    .rainfall-area-risk-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+    .rainfall-area-risk-header h4 { margin: 0; color: var(--text-main); font-size: .95rem; letter-spacing: -.01em; }
+    .rainfall-area-risk-header p { margin: .3rem 0 0; color: var(--text-muted); font-size: .74rem; line-height: 1.45; }
+    .rain-total { display: flex; flex-direction: column; align-items: flex-end; min-width: 10rem; padding: .55rem .8rem; border: 1px solid var(--status-low-border); border-radius: var(--radius-md); background: var(--status-low-bg); color: var(--text-muted); font-size: .68rem; }
+    .rain-total strong { color: var(--status-low); font-size: 1.35rem; line-height: 1.1; }
+    .rain-total strong small { font-size: .72rem; font-weight: 700; }
+    .area-risk-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }
+    .area-risk-columns > div { min-width: 0; padding: .8rem; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); background: var(--bg-dark); }
+    .area-risk-columns h5 { display: flex; align-items: center; gap: .45rem; margin: 0 0 .45rem; color: var(--text-main); font-size: .76rem; }
+    .risk-rank-dot { width: .5rem; height: .5rem; border-radius: 50%; }
+    .risk-rank-dot.higher { background: #f97316; box-shadow: 0 0 0 3px rgba(249,115,22,.12); }
+    .risk-rank-dot.lower { background: #10b981; box-shadow: 0 0 0 3px rgba(16,185,129,.12); }
+    .area-risk-row { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .52rem .35rem; border-bottom: 1px solid var(--border-light); color: var(--text-muted); font-size: .73rem; }
+    .area-risk-row:last-child { border-bottom: 0; }
+    .area-risk-row strong { color: var(--text-main); font-family: monospace; font-size: .7rem; white-space: nowrap; }
+    .area-risk-tie, .rainfall-area-risk-empty { margin-top: .85rem; padding: .8rem .9rem; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); color: var(--text-muted); background: var(--bg-dark); font-size: .75rem; }
+    .area-risk-tie { display: flex; flex-direction: column; gap: .15rem; border-color: var(--status-caution-border); background: var(--status-caution-bg); }
+    .area-risk-tie strong { color: var(--text-main); }
+    .area-risk-tied-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; margin-top: .65rem; }
+    .area-risk-footnote { display: flex; align-items: flex-start; gap: .6rem; margin-top: .85rem; padding-top: .75rem; border-top: 1px solid var(--border-light); color: var(--text-muted); font-size: .68rem; }
+    .forecast-source-pill { flex: 0 0 auto; padding: .2rem .45rem; border-radius: var(--radius-full); color: #047857; background: rgba(16,185,129,.12); font-size: .59rem; font-weight: 800; letter-spacing: .04em; }
+    .forecast-source-pill.cached { color: #b45309; background: var(--status-caution-bg); }
+    @media (max-width: 640px) { .area-risk-columns, .area-risk-tied-list { grid-template-columns: 1fr; } .rain-total { align-items: flex-start; } }
     .rainfall-chart-wrap { margin-top: 1rem; }
     .rainfall-chart-toolbar { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
     .rainfall-chart-switch { display: inline-flex; gap: .25rem; padding: .2rem; border: 1px solid var(--border-light); border-radius: var(--radius-sm); }
@@ -1704,6 +1769,7 @@ import { RainfallForecastHour, RainfallLocation, RainfallReading } from '../../c
       padding: 0.2rem 0.55rem;
       letter-spacing: 0.04em;
     }
+    .badge-live-pulse.cached-weather-status { color: var(--text-muted); background: rgba(148,163,184,.1); border-color: var(--border-light); }
     .badge-radar {
       font-size: 0.68rem;
       color: #fbbf24;
@@ -2557,7 +2623,9 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
   selectedWeatherLocation = '';
   weatherCurrent: RainfallReading | null = null;
   weatherHourly: RainfallForecastHour[] = [];
+  weatherHourlyStatus = 'unavailable';
   weatherLoading = false;
+  weatherManualRefreshing = false;
   weatherError = '';
   weatherFetchedAt = '';
   weatherLastSuccessAt = '';
@@ -2567,6 +2635,7 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
   weatherForecastIsStale = false;
   weatherForecastCacheAge = 'Unknown';
   weatherStatusLabel = 'WEATHER UNAVAILABLE';
+  weatherStatusCode = 'unavailable';
   weatherConnectionLabel = 'Checking';
   weatherCacheLabel = 'No cached reading';
   weatherDataTypeLabel = 'MODEL ESTIMATE';
@@ -2639,6 +2708,7 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
         this.weatherLastSuccessAt = this.weatherFetchedAt;
         this.weatherLastFailureAt = this.formatChennaiTimestamp(current.last_failed_refresh_at);
         this.weatherIsStale = Boolean(current.is_stale) || current.status === 'stale';
+        this.weatherStatusCode = current.status;
         this.weatherStatusLabel = this.weatherStatusText(current.status, current.failure_type);
         this.updateRainfallKpiProvenance(current.status, current.precipitation_mm, current.fetched_at);
         this.weatherConnectionLabel = current.status === 'success' ? 'Connected' :
@@ -2660,6 +2730,7 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
         this.weatherConnectionLabel = 'Backend unavailable';
         if (this.weatherCurrent) { this.weatherIsStale = true; this.weatherStatusLabel = 'CACHED DATA · BACKEND UNAVAILABLE'; this.weatherCacheLabel = 'Last reading retained · stale'; }
         else this.weatherStatusLabel = 'WEATHER UNAVAILABLE';
+        this.weatherStatusCode = this.weatherCurrent ? 'stale' : 'unavailable';
       }
     });
     this.rainfallApi.status(this.selectedWeatherLocation).subscribe({
@@ -2667,6 +2738,7 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
         this.weatherConnectionLabel = status.status === 'success' ? 'Connected' :
           (status.status === 'cached' ? 'Saved data available; provider refresh not confirmed' : 'Unavailable');
         this.weatherIsStale = Boolean(status.is_stale) || status.status === 'stale';
+        this.weatherStatusCode = status.status;
         this.weatherLastSuccessAt = this.formatChennaiTimestamp(status.last_successful_fetch_at);
         this.weatherLastFailureAt = this.formatChennaiTimestamp(status.last_failed_refresh_at);
         this.weatherCacheLabel = status.cached_data_available
@@ -2681,10 +2753,12 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
       error: () => {
         this.weatherConnectionLabel = 'Status unavailable';
         if (this.weatherCurrent) { this.weatherIsStale = true; this.weatherCacheLabel = 'Last reading retained · freshness unconfirmed'; }
+        this.weatherStatusCode = this.weatherCurrent ? 'stale' : 'unavailable';
       }
     });
     this.rainfallApi.hourly(this.selectedWeatherLocation).subscribe({
       next: forecast => {
+        this.weatherHourlyStatus = forecast.status;
         this.weatherHourly = forecast.status === 'success' || forecast.status === 'stale' || forecast.status === 'cached' ? (forecast.hourly ?? []) : [];
         this.weatherForecastCacheAge = this.formatCacheAge(forecast.forecast_cache_age_seconds);
         this.weatherForecastIsStale = Boolean(forecast.forecast_is_stale) ||
@@ -2694,6 +2768,7 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
         this.weatherLoading = false;
       },
       error: () => {
+        this.weatherHourlyStatus = 'unavailable';
         this.weatherForecastIsStale = this.weatherHourly.length > 0;
         this.weatherLoading = false;
         if (!this.weatherError) this.weatherError = 'Could not refresh the hourly forecast. Previously loaded forecast data is retained when available.';
@@ -2703,6 +2778,45 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
 
   get weatherCurrentAvailable(): boolean {
     return typeof this.weatherCurrent?.precipitation_mm === 'number' && Number.isFinite(this.weatherCurrent.precipitation_mm);
+  }
+
+  get next24HourRainfallMm(): number | null {
+    if (!['success', 'cached', 'stale'].includes(this.weatherHourlyStatus)) return null;
+    const now = Date.now();
+    const end = now + 24 * 60 * 60 * 1000;
+    const hours = this.weatherHourly
+      .filter(hour => {
+        const time = Date.parse(hour.timestamp);
+        return Number.isFinite(time) && time > now && time <= end;
+      })
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+    if (hours.length !== 24 || hours.some(hour => typeof hour.precipitation_mm !== 'number' || !Number.isFinite(hour.precipitation_mm))) return null;
+    return Math.round(hours.reduce((total, hour) => total + hour.precipitation_mm!, 0) * 10) / 10;
+  }
+
+  get areaSusceptibilityRanking(): Array<{ name: string; score: number }> {
+    const localityScores = new Map<string, { total: number; count: number }>();
+    for (const zone of this.floodZones) {
+      if (!Number.isFinite(zone.riskScore)) continue;
+      const locality = zone.name.replace(/\s+\([^)]*\)$/, '').trim();
+      if (!locality) continue;
+      const aggregate = localityScores.get(locality) ?? { total: 0, count: 0 };
+      const rawScore = typeof zone.probability === 'number' && Number.isFinite(zone.probability)
+        ? zone.probability * 100
+        : zone.riskScore;
+      aggregate.total += rawScore;
+      aggregate.count += 1;
+      localityScores.set(locality, aggregate);
+    }
+    return Array.from(localityScores, ([name, value]) => ({
+      name,
+      score: value.total / value.count
+    })).sort((a, b) => b.score - a.score);
+  }
+
+  get areaScoresSeparate(): boolean {
+    const scores = this.areaSusceptibilityRanking;
+    return scores.length > 1 && scores[0].score - scores[scores.length - 1].score > 0.05;
   }
 
   get weatherChartAvailable(): boolean {
@@ -2820,8 +2934,71 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   refreshWeather(): void {
-    if (this.selectedWeatherLocation) this.fetchSelectedWeather();
-    else this.loadWeatherTelemetry();
+    if (!this.selectedWeatherLocation || this.weatherManualRefreshing) return;
+    this.weatherManualRefreshing = true;
+    this.weatherLoading = true;
+    this.weatherError = '';
+    this.rainfallApi.refresh(this.selectedWeatherLocation).subscribe({
+      next: response => {
+        this.weatherManualRefreshing = false;
+        this.weatherLoading = false;
+        const current: RainfallReading = {
+          ...response.current,
+          location: response.location,
+          latitude: response.latitude,
+          longitude: response.longitude,
+          fetched_at: response.last_successful_fetch_at ?? response.fetched_at,
+          data_source: response.data_source,
+          data_type: response.data_type,
+          status: response.status,
+          is_stale: Boolean(response.is_stale),
+          cached_data_available: Boolean(response.cached_data_available),
+          freshness: response.freshness,
+          last_failed_refresh_at: response.last_failed_refresh_at,
+          failure_type: response.failure_type,
+          error: response.error
+        };
+        this.weatherCurrent = current;
+        this.weatherHourly = response.hourly ?? [];
+        this.weatherHourlyStatus = response.status;
+        this.weatherProviderTimestamp = this.formatChennaiTimestamp(current.timestamp);
+        this.weatherFetchedAt = this.formatChennaiTimestamp(current.fetched_at);
+        this.weatherLastSuccessAt = this.weatherFetchedAt;
+        this.weatherLastFailureAt = this.formatChennaiTimestamp(response.last_failed_refresh_at);
+        this.weatherIsStale = Boolean(response.is_stale) || response.status === 'stale';
+        this.weatherStatusCode = response.status;
+        this.weatherStatusLabel = this.weatherStatusText(response.status, response.failure_type);
+        this.weatherConnectionLabel = response.status === 'success' ? 'Fresh provider response received' :
+          (response.status === 'stale' ? 'Provider refresh failed; showing saved data' : 'Weather unavailable');
+        this.weatherCacheLabel = response.cached_data_available
+          ? (this.weatherIsStale ? 'Available · stale' : 'Available · fresh') : 'No cached reading';
+        this.weatherForecastIsStale = Boolean(response.forecast_is_stale) ||
+          this.weatherHourly.some(hour => this.timestampAgeSeconds(hour.fetched_at) > this.weatherRefreshIntervalSeconds);
+        this.weatherForecastCacheAge = this.formatCacheAge(response.forecast_cache_age_seconds);
+        this.weatherDataTypeLabel = `FORECAST · ${response.forecast_hours_available ?? this.weatherHourly.length} HOURS`;
+        this.rainChartPoints = this.buildRainChart(this.weatherHourly.slice(0, 48));
+        this.cityWeather = { temp: current.temperature_c ?? null, humidity: current.humidity_percent ?? null,
+          pressure: null, wind: current.wind_speed_kmh == null ? null : `${current.wind_speed_kmh} km/h` };
+        this.applyRainfallPointToMap(current);
+        this.updateRainfallKpiProvenance(response.status, current.precipitation_mm, current.fetched_at);
+        if (response.status === 'stale' || response.status === 'unavailable') {
+          this.weatherError = this.weatherDiagnosticMessage(response.failure_type);
+        } else if (response.database_persisted === false) {
+          this.weatherError = 'Open-Meteo returned fresh data, but FloodWatch could not save the current reading and hourly forecast to its database. Check the backend database logs.';
+        }
+      },
+      error: error => {
+        this.weatherManualRefreshing = false;
+        this.weatherLoading = false;
+        this.weatherError = error?.error?.detail || 'The backend could not complete a forced Open-Meteo refresh. The last displayed reading has been retained.';
+        if (this.weatherCurrent) {
+          this.weatherIsStale = true;
+          this.weatherStatusCode = 'stale';
+          this.weatherStatusLabel = 'CACHED DATA · REFRESH FAILED';
+          this.weatherConnectionLabel = 'Refresh failed; showing last saved reading';
+        }
+      }
+    });
   }
 
   ngAfterViewInit(): void {

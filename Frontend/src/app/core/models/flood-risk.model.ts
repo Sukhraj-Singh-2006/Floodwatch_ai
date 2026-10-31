@@ -9,6 +9,7 @@ export interface FloodZone {
   bounds: [[number, number], [number, number]]; // Leaflet LatLngBoundsExpression
   riskLevel: RiskLevel;
   riskScore: number; // 0 - 100
+  probability?: number; // Raw model score (not calibrated probability)
   predictionTime: PredictionTime;
   rainfall: number; // mm/hr (simulated)
   elevation: number; // meters (prototype)

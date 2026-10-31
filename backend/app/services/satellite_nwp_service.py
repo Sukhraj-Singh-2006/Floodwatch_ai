@@ -267,21 +267,23 @@ class SatelliteNwpService:
                 "wind_speed_kmh": row.wind_speed_kmh,
                 "fetched_at": row.retrieved_at_iso or _iso_utc(SatelliteNwpService._row_retrieved_datetime(row))}
 
-    def get_live_precipitation_and_soil(self, latitude=None, longitude=None, location_id=None):
+    def get_live_precipitation_and_soil(self, latitude=None, longitude=None, location_id=None, force_refresh=False):
         location = self._resolve_location(latitude, longitude, location_id)
         key = location["id"]
         with self._lock:
             lock = self._locks.setdefault(key, threading.Lock())
+        if force_refresh and lock.locked():
+            logger.info("Manual Open-Meteo refresh for %s is waiting for the active per-location refresh", key)
         with lock:
             if key not in self._cache:
                 self._restore_location_cache(location)
             age = time.time() - self._last_fetch.get(key, 0)
-            if key in self._cache and age < settings.WEATHER_CACHE_TTL_SECONDS:
+            if not force_refresh and key in self._cache and age < settings.WEATHER_CACHE_TTL_SECONDS:
                 result = self._with_freshness(self._cache[key], age)
-                result["status"] = "cached" if result.get("cache_restored") else "success"
+                result["status"] = "cached"
                 return result
             attempt_age = time.time() - self._last_attempt.get(key, 0)
-            if key in self._last_attempt and attempt_age < max(60, settings.WEATHER_REFRESH_INTERVAL_SECONDS):
+            if not force_refresh and key in self._last_attempt and attempt_age < max(60, settings.WEATHER_REFRESH_INTERVAL_SECONDS):
                 if key in self._cache:
                     result = self._with_freshness(self._cache[key], age)
                     result["status"] = "stale"
@@ -292,17 +294,25 @@ class SatelliteNwpService:
                 return self._unavailable(location, self._last_error.get(key, "Weather provider refresh failed; retry is cooling down."),
                     self._last_failure_type.get(key), self._last_failure_at.get(key))
             self._last_attempt[key] = time.time()
+            logger.info("Weather refresh started for %s (manual_force=%s)", key, force_refresh)
             try:
                 parsed = self._fetch(location)
+                logger.info("Open-Meteo response received for %s: provider_time=%s forecast_hours=%s",
+                            key, parsed.get("provider_time"), parsed.get("forecast_hours_available"))
                 self._cache[key] = parsed
                 self._last_fetch[key] = time.time()
                 self._last_error.pop(key, None)
                 self._last_failure_type.pop(key, None)
                 self._last_failure_at.pop(key, None)
-                self._persist(parsed)
+                parsed["database_persisted"] = self._persist(parsed)
+                if parsed["database_persisted"]:
+                    logger.info("Weather database updated for %s: current reading and %d forecast hours",
+                                key, len(parsed.get("hourly", [])))
+                else:
+                    logger.error("Weather response for %s is fresh in memory but database persistence failed", key)
                 return self._with_freshness(parsed, 0)
             except Exception as exc:
-                logger.warning("Open-Meteo refresh failed for %s: %s", key, exc)
+                logger.exception("Weather refresh failed for %s: %s", key, exc)
                 self._last_error[key] = str(exc)
                 self._last_failure_type[key] = self._classify_error(exc)
                 self._last_failure_at[key] = _iso_utc()
@@ -365,7 +375,10 @@ class SatelliteNwpService:
         with httpx.Client(timeout=settings.WEATHER_HTTP_TIMEOUT_SECONDS, follow_redirects=True) as client:
             for attempt in range(attempts):
                 try:
+                    logger.info("Open-Meteo GET sent to %s for %s (attempt %d/%d)",
+                                settings.WEATHER_API_URL, location["id"], attempt + 1, attempts)
                     response = client.get(settings.WEATHER_API_URL, params=params)
+                    logger.info("Open-Meteo HTTP response for %s: status=%d", location["id"], response.status_code)
                     if response.status_code == 429 or response.status_code >= 500:
                         response.raise_for_status()
                     response.raise_for_status()
@@ -431,6 +444,7 @@ class SatelliteNwpService:
         db: Session = SessionLocal()
         try:
             rows = [(data["current"], "current_estimate")] + [(item, "forecast") for item in data["hourly"]]
+            persisted = {"current_estimate": 0, "forecast": 0}
             for item, category in rows:
                 try:
                     provider_dt = _provider_datetime(item["timestamp"], data.get("timezone", CHENNAI_TIMEZONE))
@@ -454,12 +468,17 @@ class SatelliteNwpService:
                     row.provider_timestamp_iso = provider_dt.isoformat()
                     row.retrieved_at_iso = _iso_utc(retrieved_dt)
                     db.add(row)
+                    persisted[category] += 1
                 except (TypeError, ValueError):
                     logger.warning("Skipping malformed weather observation %r", item)
             db.commit()
+            logger.info("Persisted Open-Meteo rows for %s: current=%d forecast=%d",
+                        data["location"]["id"], persisted["current_estimate"], persisted["forecast"])
+            return persisted["current_estimate"] == 1 and persisted["forecast"] == len(data["hourly"])
         except Exception:
             db.rollback()
             logger.exception("Could not persist Open-Meteo readings")
+            return False
         finally:
             db.close()
 

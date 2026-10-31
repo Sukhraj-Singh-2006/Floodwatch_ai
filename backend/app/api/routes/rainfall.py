@@ -22,6 +22,16 @@ def current(latitude: float | None = None, longitude: float | None = None, locat
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.post("/refresh")
+def refresh(latitude: float | None = None, longitude: float | None = None, location_id: str | None = None):
+    """Force a new provider GET, bypassing cache TTL and automatic retry cooldown."""
+    try:
+        return SatelliteNwpService.get_instance().get_live_precipitation_and_soil(
+            latitude, longitude, location_id, force_refresh=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/hourly")
 @router.get("/forecast")
 def hourly_forecast(latitude: float | None = None, longitude: float | None = None, location_id: str | None = None):

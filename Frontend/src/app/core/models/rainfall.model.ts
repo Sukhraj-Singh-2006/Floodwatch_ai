@@ -61,6 +61,29 @@ export interface RainfallStatus {
   error?: string | null;
 }
 
+export interface RainfallRefreshResponse {
+  location: RainfallLocation;
+  latitude: number | null;
+  longitude: number | null;
+  current: Omit<RainfallReading, 'location' | 'latitude' | 'longitude' | 'fetched_at' | 'data_source' | 'data_type' | 'status'>;
+  hourly: RainfallForecastHour[];
+  fetched_at: string | null;
+  last_successful_fetch_at?: string | null;
+  last_failed_refresh_at?: string | null;
+  data_source: string;
+  data_type: string;
+  status: string;
+  freshness?: string;
+  cached_data_available?: boolean;
+  is_stale?: boolean;
+  forecast_is_stale?: boolean;
+  forecast_cache_age_seconds?: number | null;
+  forecast_hours_available?: number;
+  failure_type?: string | null;
+  error?: string | null;
+  database_persisted?: boolean;
+}
+
 export interface RainfallLocationsResponse {
   locations: RainfallLocation[];
   refresh_interval_seconds: number;

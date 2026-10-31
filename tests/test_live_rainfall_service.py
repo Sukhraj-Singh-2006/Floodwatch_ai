@@ -7,6 +7,8 @@ from sqlalchemy.pool import StaticPool
 from backend.app.db.base import Base
 import backend.app.services.satellite_nwp_service as weather_module
 from backend.app.services.rainfall_service import RainfallService
+from backend.app.db.models.weather_observation import WeatherObservation
+from backend.app.api.routes import rainfall as rainfall_routes
 
 
 def sample_provider_response():
@@ -138,6 +140,68 @@ def test_cache_stale_on_outage_and_recovers_on_success(monkeypatch):
     assert recovered["status"] == "success"
     assert recovered["current"]["precipitation_mm"] == 2.4
     assert recovered["last_failed_refresh_at"] is None
+
+
+def test_forced_refresh_bypasses_fresh_cache_and_persists_current_and_forecast(monkeypatch):
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(weather_module, "SessionLocal", factory)
+    service = SatelliteNwpService()
+    location = service.get_locations()[0]
+    key = location["id"]
+
+    old_payload = sample_provider_response()
+    old_payload["current"]["temperature_2m"] = 28.8
+    old = service._parse(old_payload, location)
+    assert service._persist(old) is True
+    service._cache[key] = old
+    service._last_fetch[key] = datetime.now().timestamp()
+    service._last_attempt[key] = datetime.now().timestamp()
+
+    fresh_payload = sample_provider_response()
+    fresh_payload["current"]["temperature_2m"] = 29.3
+    fresh_payload["hourly"]["precipitation"] = [1.2, 0.4]
+    fresh_payload["hourly"]["rain"] = [1.2, 0.4]
+    calls = []
+
+    def provider_get(_location):
+        calls.append(_location["id"])
+        return service._parse(fresh_payload, location)
+
+    monkeypatch.setattr(service, "_fetch", provider_get)
+    result = service.get_live_precipitation_and_soil(location_id=key, force_refresh=True)
+
+    assert calls == [key]
+    assert result["status"] == "success"
+    assert result["current"]["temperature_c"] == 29.3
+    assert result["database_persisted"] is True
+    db = factory()
+    try:
+        current = db.query(WeatherObservation).filter_by(location_id=key, data_category="current_estimate").one()
+        forecast = db.query(WeatherObservation).filter_by(location_id=key, data_category="forecast").order_by(
+            WeatherObservation.observation_time.asc()).first()
+        assert current.temperature_c == 29.3
+        assert forecast.precipitation_mm == 1.2
+        assert current.retrieved_at_iso == result["fetched_at"]
+        assert forecast.retrieved_at_iso == result["fetched_at"]
+    finally:
+        db.close()
+
+
+def test_manual_refresh_endpoint_requests_forced_provider_refresh(monkeypatch):
+    captured = {}
+
+    class FakeWeather:
+        def get_live_precipitation_and_soil(self, latitude, longitude, location_id, force_refresh=False):
+            captured.update(latitude=latitude, longitude=longitude, location_id=location_id,
+                            force_refresh=force_refresh)
+            return {"status": "success", "data_source": "Open-Meteo"}
+
+    monkeypatch.setattr(SatelliteNwpService, "get_instance", classmethod(lambda cls: FakeWeather()))
+    response = rainfall_routes.refresh(location_id="chennai-reference")
+    assert captured == {"latitude": None, "longitude": None, "location_id": "chennai-reference", "force_refresh": True}
+    assert response["status"] == "success"
 
 
 def test_dns_failure_is_classified_without_fabricating_reading(monkeypatch):

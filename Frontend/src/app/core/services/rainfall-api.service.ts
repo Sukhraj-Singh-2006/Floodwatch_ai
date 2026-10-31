@@ -6,6 +6,7 @@ import {
   RainfallForecast,
   RainfallLocationsResponse,
   RainfallReading,
+  RainfallRefreshResponse,
   RainfallStatus
 } from '../models/rainfall.model';
 
@@ -20,6 +21,12 @@ export class RainfallApiService {
 
   current(locationId: string): Observable<RainfallReading> {
     return this.http.get<RainfallReading>(`${this.baseUrl}/current`, { params: this.locationParams(locationId) });
+  }
+
+  refresh(locationId: string): Observable<RainfallRefreshResponse> {
+    return this.http.post<RainfallRefreshResponse>(`${this.baseUrl}/refresh`, null, {
+      params: this.locationParams(locationId)
+    });
   }
 
   hourly(locationId: string): Observable<RainfallForecast> {
